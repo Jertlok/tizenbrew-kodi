@@ -34,7 +34,9 @@ if grep -alF -e "$WS" -e "$HOME" "$FLAT"/*; then
 fi
 # Not in files.txt, so the TV does not download it.
 git -C "$KODI" archive --format=tar.gz --prefix="kodi-tizen-wasm-$COMMIT/" -o "$FLAT/kodi-source-$COMMIT.tar.gz" HEAD
+# The build fixes made in the Kodi tree, which the archive (of the commit) does not have.
+git -C "$KODI" diff HEAD > "$FLAT/kodi-local-changes.patch"
 gh release create "v$VERSION" -R "$REPO" -t "Kodi WASM $VERSION (unofficial)" -n "Unofficial Kodi WASM build for the tizenbrew-kodi module.
 
-Built unmodified with tools/wasm/tizen/build.sh from https://github.com/Ricrdsson1/kodi-tizen-wasm/tree/$COMMIT (GPL-2.0-or-later); its source is attached as kodi-source-$COMMIT.tar.gz. Shaka Player is Apache-2.0. Not endorsed by the XBMC Foundation." "$FLAT"/*
+Built with tools/wasm/tizen/build.sh from https://github.com/Ricrdsson1/kodi-tizen-wasm/tree/$COMMIT (GPL-2.0-or-later) plus the build fixes in kodi-local-changes.patch; the source is attached as kodi-source-$COMMIT.tar.gz. Shaka Player is Apache-2.0. Not endorsed by the XBMC Foundation." "$FLAT"/*
 rm -rf "$FLAT"

@@ -27,15 +27,18 @@ Tested so far on one TV: Tizen 9.0, Chromium 120.
 
 ## Source of the Kodi build
 
-The release assets are built unmodified from
+The release assets are built from
 [Ricrdsson1/kodi-tizen-wasm@8393ab6](https://github.com/Ricrdsson1/kodi-tizen-wasm/tree/8393ab6)
-with `tools/wasm/tizen/build.sh` (Emscripten 5.0.6). The release names the exact commit
-and carries a source archive. Kodi is GPL-2.0-or-later; Shaka Player, which plays DRM
+with `tools/wasm/tizen/build.sh` (Emscripten 5.0.6), plus two build fixes in
+`kodi-local-changes.patch`: the C standard option autoconf 2.72 adds to `CC` is kept out
+of the generated toolchain files, and the static add-ons wait for the libraries Kodi
+builds itself. The release names the exact commit and carries the source archive and
+the patch. Kodi is GPL-2.0-or-later; Shaka Player, which plays DRM
 protected streams, is Apache-2.0.
 
 ## Development
 
-`node test-service.mjs` runs the service against a fake release. `publish.sh <owner/repo> <build-dir>`
+`node test-service.mjs` runs the service against a fake release. `publish.sh <owner/repo> <build-dir> <kodi-source-dir>`
 uploads a build as the release `service.js` downloads from.
 
 ## Licence
