@@ -16,8 +16,8 @@
 <div id="bar"><div id="fill"></div></div>
 <div id="err"></div>
 <script>
-  // The service (service.js) downloads Kodi into TizenBrew's data directory; Kodi runs from
-  // there because only file:// pages get SharedArrayBuffer on the TV.
+  // The service (kodi-service.js) downloads Kodi into TizenBrew's data directory; Kodi runs
+  // from there because only file:// pages get SharedArrayBuffer on the TV.
   function poll() {
     fetch('http://127.0.0.1:8083/status').then(function (r) { return r.json(); }).then(function (s) {
       if (s.state === 'ready') return location.replace(s.url);
@@ -30,7 +30,10 @@
       setTimeout(poll, 500);
     }).catch(function () { setTimeout(poll, 500); });
   }
-  poll();
+  // First have the loader (service.js) run the newest service code, then follow it. A
+  // service that is not up yet, or is downloading, simply keeps running.
+  fetch('http://127.0.0.1:8083/reload').then(function (r) { return r.json(); })
+    .then(function (r) { setTimeout(poll, r.reloading ? 1500 : 0); }, function () { poll(); });
 </script>
 </body>
 </html>

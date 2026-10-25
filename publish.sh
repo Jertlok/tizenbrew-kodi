@@ -8,8 +8,8 @@ USAGE='usage: publish.sh <owner/repo> <build-dir> <kodi-source-dir>'
 REPO=${1:?$USAGE}
 STAGE=${2:?$USAGE}/tizen-wgt
 KODI=${3:?$USAGE}
-# The release tag service.js downloads from; bump KODI_RELEASE there for a new Kodi build.
-TAG=$(sed -n "s/^var KODI_RELEASE = '\(.*\)';/\1/p" "$(dirname "$0")/service.js")
+# The release tag kodi-service.js downloads from; bump KODI_RELEASE there for a new Kodi build.
+TAG=$(sed -n "s/^var KODI_RELEASE = '\(.*\)';/\1/p" "$(dirname "$0")/kodi-service.js")
 COMMIT=$(git -C "$KODI" rev-parse HEAD)
 
 # config.xml belongs to the widget only; TizenBrew's own widget hosts the page.

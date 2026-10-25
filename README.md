@@ -9,10 +9,9 @@ Kodi® is a trademark of the XBMC Foundation; see [kodi.tv](https://kodi.tv).
 
 ## Install
 
-In TizenBrew's module manager, add `gh/Jertlok/tizenbrew-kodi@0.0.3` (the newest tag) and
-open "Kodi (unofficial)". Give the version: without one, jsDelivr may keep serving an older
-tag for hours, and can mix files of two tags. To update, remove the module and add it again
-with the new version; TizenBrew then also starts the new service code.
+In TizenBrew's module manager, add `gh/Jertlok/tizenbrew-kodi@0.0.4` and open
+"Kodi (unofficial)". That is the only time a version is typed: updates arrive by
+themselves (see below).
 The first start downloads the Kodi build (the release assets) into TizenBrew's data
 directory; later starts use it from there.
 
@@ -20,7 +19,7 @@ directory; later starts use it from there.
 
 Kodi's WASM build needs `SharedArrayBuffer`. On the TV, the web engine only gives it to
 `file://` documents: pages served over http, even from `127.0.0.1` with COOP/COEP headers,
-are not cross-origin isolated. So `service.js`, which TizenBrew runs in its Node service,
+are not cross-origin isolated. So `kodi-service.js`, which runs in TizenBrew's Node service,
 downloads the build into `/opt/usr/home/owner/apps_rw/<TizenBrew package>/data/kodi/<version>/`
 and serves its progress on `http://127.0.0.1:8083/status`. `app/index.html` shows the
 progress and then navigates to Kodi's `index.html` there. The Tizen WASM Player, which Kodi
@@ -44,9 +43,15 @@ protected streams, is Apache-2.0.
 `node test-service.mjs` runs the service against a fake release. `publish.sh <owner/repo> <build-dir> <kodi-source-dir>`
 uploads a build as the release `service.js` downloads from.
 
-TizenBrew gets the module from jsDelivr, which serves the newest semver tag of this repo,
-not `main`. So a module change goes out by tagging it (`git tag v0.0.4 && git push --tags`).
-The Kodi build is a separate release, named by `KODI_RELEASE` in `service.js`.
+TizenBrew gets `service.js` and `app/` from jsDelivr, whose alias for the newest tag can
+lag for hours, and starts a module's service only once per run of its service process,
+which outlives the TizenBrew app. So those files are a bootstrap that stays the same:
+`service.js` only fetches `kodi-service.js` from the `main` branch and runs it, and the
+page asks it to fetch and run the newest copy (`/reload`) each time Kodi is opened. A
+change to `kodi-service.js` therefore reaches the TV by pushing to `main`. Changing
+`service.js` or `app/` needs a new tag and the module added again with that version.
+
+The Kodi build is a separate release, named by `KODI_RELEASE` in `kodi-service.js`.
 
 ## Licence
 
