@@ -188,6 +188,85 @@ function reloadSelf() {
   });
 }
 
+// Opening Kodi. Chromium does not let the module's page (http://127.0.0.1:8081) navigate
+// to a file:// URL ("Not allowed to load local resource"), but DevTools' Page.navigate
+// may. TizenBrew runs its pages with DevTools open on a random port of the TV, which it
+// uses itself; this finds the port and has the module's page open Kodi.
+var WS = (function () {
+  try { return require('ws-new'); } catch (e) {}   // TizenBrew's copy of the ws package
+  try { return require('ws'); } catch (e) {}
+  return null;
+})();
+var devtoolsPort = 0;
+var opening = false;
+
+function devtoolsList(port) {
+  return new Promise(function (resolve) {
+    var req = http.get({ host: '127.0.0.1', port: port, path: '/json/list', timeout: 1000 }, function (res) {
+      var text = '';
+      res.on('data', function (c) { text += c; });
+      res.on('end', function () {
+        try { var list = JSON.parse(text); resolve(Array.isArray(list) ? list : null); } catch (e) { resolve(null); }
+      });
+    });
+    req.on('timeout', function () { req.destroy(); resolve(null); });
+    req.on('error', function () { resolve(null); });
+  });
+}
+
+function findDevtools() {
+  if (devtoolsPort) {
+    return devtoolsList(devtoolsPort).then(function (list) {
+      if (list) return { port: devtoolsPort, list: list };
+      devtoolsPort = 0;
+      return findDevtools();
+    });
+  }
+  var t = Date.now(), next = 1024, found = null;
+  // Closed ports on 127.0.0.1 refuse at once, so a full scan takes seconds.
+  function batch() {
+    if (found || next > 65535) return Promise.resolve(found);
+    var probes = [];
+    for (var i = 0; i < 500 && next <= 65535; i++, next++) {
+      probes.push((function (port) {
+        return devtoolsList(port).then(function (list) { if (list && !found) found = { port: port, list: list }; });
+      })(next));
+    }
+    return Promise.all(probes).then(batch);
+  }
+  return batch().then(function (f) {
+    log(f ? 'DevTools on port ' + f.port + ' (scan ' + (Date.now() - t) + ' ms)' : 'DevTools not found');
+    if (f) devtoolsPort = f.port;
+    return f;
+  });
+}
+
+function openKodi() {
+  if (opening || process.env.KODI_NO_OPEN) return;   // KODI_NO_OPEN: set by the self-check
+  opening = true;
+  log('opening Kodi');
+  findDevtools().then(function (d) {
+    if (!d) throw new Error('DevTools of TizenBrew not found');
+    if (!WS) throw new Error('no WebSocket client in TizenBrew');
+    var page = d.list.filter(function (t) { return t.type === 'page' && t.url.indexOf('tizenbrew-kodi') >= 0; })[0];
+    if (!page) throw new Error('module page not found among ' + d.list.length + ' DevTools targets');
+    return new Promise(function (resolve, reject) {
+      var ws = new WS(page.webSocketDebuggerUrl);
+      var timer = setTimeout(function () { ws.terminate(); reject(new Error('no answer from DevTools')); }, 10000);
+      ws.on('open', function () { ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: status.url } })); });
+      ws.on('message', function (m) {
+        var r = JSON.parse(m);
+        if (r.id !== 1) return;
+        clearTimeout(timer); ws.close();
+        if (r.error || (r.result && r.result.errorText)) reject(new Error((r.error && r.error.message) || r.result.errorText));
+        else resolve();
+      });
+      ws.on('error', function (e) { clearTimeout(timer); reject(e); });
+    });
+  }).then(function () { log('opened Kodi'); }, function (e) { log('could not open Kodi: ' + e.message); })
+    .then(function () { opening = false; });
+}
+
 // Also closes the connections the page keeps open, so its next request reaches the newer
 // copy instead of this one.
 function closeServer(then) {
@@ -206,6 +285,9 @@ var server = http.createServer(function (req, res) {
     reloadSelf();
     return;
   }
+  // The page asks for /status until Kodi is ready, then tries to open it itself, which
+  // Chromium blocks; so the service opens it.
+  if (req.url === '/status' && status.state === 'ready') openKodi();
   res.end(JSON.stringify(status));
 });
 // TizenBrew's service process outlives the TizenBrew app, so an older copy of this service

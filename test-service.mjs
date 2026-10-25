@@ -38,6 +38,7 @@ const data = fs.mkdtempSync(path.join(os.tmpdir(), 'kodi-svc-'));
 process.env.KODI_DATA_DIR = data;
 process.env.KODI_SERVICE_SRC = base + 'kodi-service.js';
 process.env.KODI_STALL_MS = '300';
+process.env.KODI_NO_OPEN = '1';
 const loader = fs.readFileSync(new URL('./service.js', import.meta.url), 'utf8');
 // Like TizenBrew's serviceLauncher.js: every global, plus require and module.
 const run = () => { const sandbox = {};
