@@ -44,16 +44,19 @@ function mkdirp(dir) {
   fs.mkdirSync(dir);
 }
 
-// GET following redirects (GitHub release assets redirect to their storage host).
-function get(url, redirects) {
+// GET following redirects (GitHub release assets redirect to their storage host). Accepts
+// 200, and 206 for a request with a Range header.
+function get(url, headers, redirects) {
   return new Promise(function (resolve, reject) {
-    (url.indexOf('https:') === 0 ? https : http).get(url, function (res) {
+    (url.indexOf('https:') === 0 ? https : http).get(url, { headers: headers || {} }, function (res) {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         if ((redirects || 0) > 5) return reject(new Error('too many redirects: ' + url));
-        return resolve(get(new URL(res.headers.location, url).href, (redirects || 0) + 1));
+        return resolve(get(new URL(res.headers.location, url).href, headers, (redirects || 0) + 1));
       }
-      if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode + ' ' + url)); }
+      if (res.statusCode !== 200 && res.statusCode !== 206) {
+        res.resume(); return reject(new Error('HTTP ' + res.statusCode + ' ' + url));
+      }
       resolve(res);
     }).on('error', reject);
   });
@@ -64,29 +67,62 @@ function get(url, redirects) {
 var stopped = false;
 var transfer = null;   // { res, out } of the download in progress
 
-function download(name) {
+function stop() {
+  stopped = true;
+  if (transfer) { transfer.res.destroy(); transfer.out.destroy(); }
+}
+
+// Over the TV's Wi-Fi a connection can go silent without ever failing. A download that
+// gets no data for this long is cut off and resumed from where it stopped.
+var STALL_MS = Number(process.env.KODI_STALL_MS) || 30000;
+var TRIES = 8;
+var savedBytes = 0;   // bytes of the files already saved, for status.bytes
+
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+function download(name, attempt) {
+  attempt = attempt || 1;
   if (stopped) return Promise.reject(new Error('stopped: a newer copy of the service took over'));
-  var dest = path.join(DIR, name);
+  var dest = path.join(DIR, name), part = dest + '.part';
   mkdirp(path.dirname(dest));
-  log('get ' + name);
+  var have = fs.existsSync(part) ? fs.statSync(part).size : 0;
+  log('get ' + name + (have ? ' from byte ' + have : ''));
   // Release assets are flat: publish.sh uploads media/splash.jpg as media__splash.jpg.
-  return get(BASE + encodeURIComponent(name.replace(/\//g, '__'))).then(function (res) {
-    log('response ' + res.statusCode + ', ' + (res.headers['content-length'] || '?') + ' bytes');
+  var url = BASE + encodeURIComponent(name.replace(/\//g, '__'));
+  return get(url, have ? { Range: 'bytes=' + have + '-' } : {}).then(function (res) {
+    // 206: the server continues the .part file; 200: it sends the whole file again.
+    if (res.statusCode !== 206) have = 0;
+    var size = have + Number(res.headers['content-length']);
+    log('response ' + res.statusCode + ', ' + size + ' bytes');
     return new Promise(function (resolve, reject) {
-      var out = fs.createWriteStream(dest + '.part');
+      var out = fs.createWriteStream(part, { flags: have ? 'a' : 'w' });
+      var got = have;
       transfer = { res: res, out: out };
       out.on('error', reject);
       res.on('error', reject);
-      res.on('data', guard(reject, function (chunk) { status.bytes += chunk.length; out.write(chunk); }));
+      res.on('aborted', function () { reject(new Error('connection closed')); });
+      res.setTimeout(STALL_MS, function () { reject(new Error('no data for ' + STALL_MS / 1000 + ' s')); res.destroy(); });
+      res.on('data', guard(reject, function (chunk) {
+        got += chunk.length;
+        status.bytes = savedBytes + got;
+        // Wait for the disk when its buffer is full, instead of holding the file in memory.
+        if (!out.write(chunk)) { res.pause(); out.once('drain', function () { res.resume(); }); }
+      }));
       res.on('end', guard(reject, function () {
-        log('received ' + name);
         out.end(guard(reject, function () {
-          fs.renameSync(dest + '.part', dest);
+          if (got !== size) return reject(new Error('got ' + got + ' of ' + size + ' bytes'));
+          fs.renameSync(part, dest);
+          savedBytes += size;
           log('saved ' + name);
           resolve();
         }));
       }));
     });
+  }).catch(function (e) {
+    if (transfer) { transfer.out.destroy(); transfer = null; }
+    if (stopped || attempt >= TRIES) throw e;
+    log('retry ' + name + ' (' + e.message + ')');
+    return wait(2000).then(function () { return download(name, attempt + 1); });
   });
 }
 
@@ -118,18 +154,13 @@ var PORT = 8083;
 var server = http.createServer(function (req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
-  if (req.url === '/shutdown') {
-    stopped = true;
-    if (transfer) { transfer.res.destroy(); transfer.out.destroy(); }
-    res.end('{}');
-    return server.close();
-  }
+  if (req.url === '/shutdown') { stop(); res.end('{}'); return server.close(); }
   // The module's page asks for this each time it opens, so the loader runs the newest
-  // copy of this file. Not in the middle of a download, which the new copy would restart.
+  // copy of this file. A download in progress stops; the new copy resumes it.
   if (req.url === '/reload') {
-    var ok = status.state !== 'downloading' && typeof reload === 'function';
+    var ok = typeof reload === 'function';
     res.end(JSON.stringify({ reloading: ok }));
-    if (ok) server.close(function () { reload(); });
+    if (ok) { stop(); server.close(function () { reload(); }); }
     return;
   }
   res.end(JSON.stringify(status));
