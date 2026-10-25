@@ -9,7 +9,7 @@ Kodi® is a trademark of the XBMC Foundation; see [kodi.tv](https://kodi.tv).
 
 ## Install
 
-In TizenBrew's module manager, add `gh/Jertlok/tizenbrew-kodi@0.0.4` and open
+In TizenBrew's module manager, add `gh/Jertlok/tizenbrew-kodi@0.0.5` and open
 "Kodi (unofficial)". That is the only time a version is typed: updates arrive by
 themselves (see below).
 The first start downloads the Kodi build (the release assets) into TizenBrew's data

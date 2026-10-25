@@ -82,6 +82,9 @@ assert.equal(first.server.listening, false);
 assert.equal(first.status.state, 'ready');   // a copy that was already done keeps its state
 assert.equal((await status()).state, 'ready');   // already installed: no new download
 
+const loaderLog = await (await fetch('http://127.0.0.1:8084')).json();
+assert.match(loaderLog.events.join('\n'), /got \d+ bytes in \d+ ms, starting it/);
 await fetch('http://127.0.0.1:8083/shutdown'); release.close();
+old.logServer.close(); svc.logServer.close();
 fs.rmSync(data, { recursive: true });
 console.log('ok');
