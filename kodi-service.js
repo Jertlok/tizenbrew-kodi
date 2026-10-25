@@ -193,16 +193,19 @@ function install() {
 var PORT = 8083;
 // The newest copy of this file. The loader (service.js) can fetch it too, but without a
 // timeout, and a fetch that hangs there leaves no copy running at all. So this copy
-// fetches its successor itself and hands over only once it has the code.
+// fetches its successor itself and hands over only once it has the code. It asks the
+// GitHub API: raw.githubusercontent.com serves a pushed file up to minutes late, and
+// cannot be purged.
 var SELF = process.env.KODI_SERVICE_SRC ||
-  'https://raw.githubusercontent.com/Jertlok/tizenbrew-kodi/main/kodi-service.js';
+  'https://api.github.com/repos/Jertlok/tizenbrew-kodi/contents/kodi-service.js?ref=main';
 var reloading = false;
 
 function reloadSelf() {
   if (reloading) return;
   reloading = true;
   log('fetching the newest service code');
-  get(SELF + '?t=' + Date.now()).then(function (res) {
+  get(SELF + (SELF.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now(),
+    { 'Accept': 'application/vnd.github.raw', 'User-Agent': 'tizenbrew-kodi' }).then(function (res) {
     return new Promise(function (resolve, reject) {
       var code = '';
       res.setEncoding('utf8');
