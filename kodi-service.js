@@ -11,10 +11,13 @@ var path = require('path');
 var http = require('http');
 var https = require('https');
 var crypto = require('crypto');
+var net = require('net');
+var zlib = require('zlib');
+var stream = require('stream');
 
 // The GitHub release holding the Kodi build. Module code is released under its own tags
 // (jsDelivr serves TizenBrew the newest one), so a module update does not download Kodi again.
-var KODI_RELEASE = 'v0.0.1';
+var KODI_RELEASE = 'v0.0.2';
 var BASE = 'https://github.com/Jertlok/tizenbrew-kodi/releases/download/' + KODI_RELEASE + '/';
 var DATA = (typeof tizen === 'object')
   ? '/opt/usr/home/owner/apps_rw/' + tizen.application.getAppInfo().packageId + '/data'
@@ -119,7 +122,7 @@ function download(name, attempt) {
           fs.renameSync(part, dest);
           savedBytes += size;
           log('saved ' + name);
-          resolve();
+          resolve(/\.gz$/.test(name) ? gunzip(dest) : undefined);
         }));
       }));
     });
@@ -128,6 +131,31 @@ function download(name, attempt) {
     if (stopped || attempt >= TRIES) throw e;
     log('retry ' + name + ' (' + e.message + ')');
     return wait(2000).then(function () { return download(name, attempt + 1); });
+  });
+}
+
+// The release has the large files gzipped, which halves the download: kodi.wasm.gz
+// becomes kodi.wasm. The .gz file is only removed once the whole file is unpacked, so a
+// failure here unpacks it again on the next try instead of downloading it again.
+function gunzip(file) {
+  var out = file.replace(/\.gz$/, '');
+  log('unpack ' + path.basename(file));
+  return new Promise(function (resolve, reject) {
+    stream.pipeline(fs.createReadStream(file), zlib.createGunzip(), fs.createWriteStream(out + '.part'), function (e) {
+      if (e) return reject(e);
+      fs.renameSync(out + '.part', out);
+      fs.unlinkSync(file);
+      resolve();
+    });
+  });
+}
+
+// Earlier Kodi releases, left behind in the data directory by an update.
+function removeOldReleases() {
+  fs.readdirSync(path.dirname(DIR)).forEach(function (d) {
+    if (d === KODI_RELEASE) return;
+    fs.rmSync(path.join(path.dirname(DIR), d), { recursive: true, force: true });
+    log('removed old release ' + d);
   });
 }
 
@@ -146,11 +174,18 @@ function install() {
     status.total = files.length;
     // One file at a time: kodi.data and kodi.wasm are large and the TV is short of memory.
     return files.reduce(function (p, name) {
-      return p.then(function () { return download(name); }).then(function () { status.done++; });
+      return p.then(function () {
+        // Already unpacked by an earlier try that failed later on.
+        if (/\.gz$/.test(name) && fs.existsSync(path.join(DIR, name.replace(/\.gz$/, ''))) &&
+            !fs.existsSync(path.join(DIR, name))) return;
+        if (/\.gz$/.test(name) && fs.existsSync(path.join(DIR, name))) return gunzip(path.join(DIR, name));
+        return download(name);
+      }).then(function () { status.done++; });
     }, Promise.resolve());
   }).then(function () {
     fs.writeFileSync(DONE, KODI_RELEASE);
     status.state = 'ready';
+    removeOldReleases();
   });
 }
 
@@ -259,6 +294,22 @@ function devtoolsList(port) {
   });
 }
 
+function listeningPorts() {
+  var ports = [];
+  ['/proc/net/tcp', '/proc/net/tcp6'].forEach(function (file) {
+    var lines;
+    try { lines = fs.readFileSync(file, 'utf8').split('\n').slice(1); } catch (e) { return; }
+    lines.forEach(function (line) {
+      // local_address is <hex address>:<hex port>; state 0A is LISTEN.
+      var cols = line.trim().split(/\s+/);
+      if (cols[3] !== '0A') return;
+      var port = parseInt(cols[1].split(':')[1], 16);
+      if (port >= 1024 && ports.indexOf(port) < 0) ports.push(port);
+    });
+  });
+  return ports;
+}
+
 function findDevtools() {
   if (devtoolsPort) {
     return devtoolsList(devtoolsPort).then(function (list) {
@@ -268,6 +319,14 @@ function findDevtools() {
     });
   }
   var t = Date.now(), next = 1024, found = null;
+  // The ports the TV listens on are in /proc/net/tcp: asking those few takes milliseconds,
+  // where scanning every port took about 30 s on the TV.
+  var listening = listeningPorts();
+  function quick() {
+    return Promise.all(listening.map(function (port) {
+      return devtoolsList(port).then(function (list) { if (list && !found) found = { port: port, list: list }; });
+    })).then(function () { return found; });
+  }
   // Closed ports on 127.0.0.1 refuse at once, so a full scan takes seconds.
   function batch() {
     if (found || next > 65535) return Promise.resolve(found);
@@ -279,7 +338,7 @@ function findDevtools() {
     }
     return Promise.all(probes).then(batch);
   }
-  return batch().then(function (f) {
+  return quick().then(function (f) { return f || batch(); }).then(function (f) {
     log(f ? 'DevTools on port ' + f.port + ' (scan ' + (Date.now() - t) + ' ms)' : 'DevTools not found');
     if (f) devtoolsPort = f.port;
     return f;
@@ -308,10 +367,102 @@ function closeServer(then) {
   if (server.closeAllConnections) setImmediate(function () { server.closeAllConnections(); });
 }
 
+// Installing a widget (.wgt) on the TV, for tools/tv.mjs on a PC: it signs the widget
+// with the user's certificate, serves it on the LAN and asks for /install through the
+// module's page. The TV's sdb (on 127.0.0.1, where Developer Mode points) installs it, so
+// Developer Mode never has to point at the PC.
+var SDK_TOOLS = process.env.KODI_SDK_TOOLS || '/home/owner/share/tmp/sdk_tools';
+var SDB_PORT = Number(process.env.KODI_SDB_PORT) || 26101;
+// Only the module's own page may ask: any web page on the TV can send a request to
+// 127.0.0.1, but the browser names its origin, and a request without one (an <img>, say)
+// is refused too.
+var PAGE_ORIGIN = 'http://127.0.0.1:8081';
+status.install = null;
+
+// Runs one shell command through sdb, which speaks the ADB protocol: CNXN, then OPEN of
+// "shell:<command>", whose output comes in WRTE packets that each need an OKAY.
+function sdbShell(command, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    var sock = net.connect(SDB_PORT, '127.0.0.1'), buf = Buffer.alloc(0), out = '', ended = false;
+    var timer = setTimeout(function () { finish(new Error('sdb: no end after ' + timeoutMs / 1000 + ' s')); }, timeoutMs);
+    function packet(cmd, arg0, arg1, data) {
+      data = data || Buffer.alloc(0);
+      var h = Buffer.alloc(24), sum = 0;
+      for (var i = 0; i < data.length; i++) sum = (sum + data[i]) >>> 0;
+      h.write(cmd, 0, 'ascii');
+      h.writeUInt32LE(arg0, 4); h.writeUInt32LE(arg1, 8); h.writeUInt32LE(data.length, 12);
+      h.writeUInt32LE(sum, 16); h.writeUInt32LE((h.readUInt32LE(0) ^ 0xffffffff) >>> 0, 20);
+      sock.write(Buffer.concat([h, data]));
+    }
+    function finish(e) {
+      if (ended) return;
+      ended = true; clearTimeout(timer); sock.destroy();
+      e ? reject(e) : resolve(out);
+    }
+    sock.on('connect', function () { packet('CNXN', 0x01000000, 4096, Buffer.from('host::\0')); });
+    sock.on('data', function (chunk) {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 24) {
+        var len = buf.readUInt32LE(12);
+        if (buf.length < 24 + len) return;
+        var cmd = buf.toString('ascii', 0, 4), remote = buf.readUInt32LE(4), data = buf.slice(24, 24 + len);
+        buf = buf.slice(24 + len);
+        if (cmd === 'CNXN') packet('OPEN', 1, 0, Buffer.from('shell:' + command + '\0'));
+        else if (cmd === 'WRTE') {
+          out += data.toString('utf8');
+          packet('OKAY', 1, remote);
+          // vd_appinstall may leave the stream open after its last line.
+          if (out.indexOf('spend time') >= 0) return finish();
+        } else if (cmd === 'CLSE') return finish();
+      }
+    });
+    sock.on('error', finish);
+    sock.on('close', function () { finish(); });
+  });
+}
+
+function installWidget(url, id) {
+  var file = path.join(SDK_TOOLS, 'tizenbrew-kodi-install.wgt');
+  status.install = { state: 'downloading', id: id, bytes: 0, output: '', error: null };
+  log('install ' + id + ' from ' + url);
+  mkdirp(SDK_TOOLS);
+  return get(url).then(function (res) {
+    return new Promise(function (resolve, reject) {
+      res.setTimeout(STALL_MS, function () { res.destroy(new Error('no data for ' + STALL_MS / 1000 + ' s')); });
+      res.on('data', function (c) { status.install.bytes += c.length; });
+      stream.pipeline(res, fs.createWriteStream(file), function (e) { e ? reject(e) : resolve(); });
+    });
+  }).then(function () {
+    status.install.state = 'installing';
+    return sdbShell('0 vd_appinstall ' + id + ' ' + file, 600000);
+  }).then(function (output) {
+    status.install.output = output;
+    status.install.state = 'done';
+    log('installed ' + id);
+  }).catch(function (e) {
+    status.install.state = 'error';
+    status.install.error = e.message;
+    log('install failed: ' + e.message);
+  }).then(function () {
+    try { fs.unlinkSync(file); } catch (e) {}
+  });
+}
+
 var server = http.createServer(function (req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
   if (req.url === '/shutdown') { stop(); res.end('{}'); return closeServer(); }
+  if (req.url.indexOf('/install?') === 0) {
+    var q = new URL(req.url, 'http://127.0.0.1').searchParams, url = q.get('url') || '', id = q.get('id') || '';
+    var why = req.headers.origin !== PAGE_ORIGIN ? 'only the module page may install apps'
+      : !/^https?:\/\//.test(url) ? 'url has to be http or https'
+      // A package id is 10 letters or digits; it goes into a shell command.
+      : !/^[A-Za-z0-9]{10}$/.test(id) ? 'id has to be a package id'
+      : status.install && /downloading|installing/.test(status.install.state) ? 'an install is running' : null;
+    if (why) { res.statusCode = 400; return res.end(JSON.stringify({ error: why })); }
+    installWidget(url, id);
+    return res.end('{"installing":true}');
+  }
   // The module's page asks for this each time it opens, so the loader runs the newest
   // copy of this file. A download in progress stops; the new copy resumes it.
   if (req.url === '/reload') {
@@ -343,4 +494,4 @@ server.once('listening', function () {
   });
 });
 
-module.exports = { status: status, server: server };
+module.exports = { status: status, server: server, findDevtools: findDevtools };

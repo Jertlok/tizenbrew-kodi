@@ -12,8 +12,24 @@ Kodi® is a trademark of the XBMC Foundation; see [kodi.tv](https://kodi.tv).
 In TizenBrew's module manager, add `gh/Jertlok/tizenbrew-kodi@0.0.5` and open
 "Kodi (unofficial)". That is the only time a version is typed: updates arrive by
 themselves (see below).
-The first start downloads the Kodi build (the release assets) into TizenBrew's data
-directory; later starts use it from there.
+The first start downloads the Kodi build (the release assets, about 56 MB gzipped) into
+TizenBrew's data directory; later starts use it from there.
+
+## Kodi as an app of its own
+
+The release also has `Kodi.wgt`, the same build as a widget of its own (package
+`KodiWasmTv`). Installed, Kodi gets a tile on the TV's home screen and starts without
+TizenBrew. The widget is unsigned: a TV only installs it signed with the user's own Samsung
+certificate. With the certificate made by TizenBrew Installer Desktop, this PC can sign and
+install it while Developer Mode stays at `127.0.0.1`:
+
+    cd tools && npm install && cd ..
+    node tools/tv.mjs install Kodi.wgt --tv <tv-ip>
+
+TizenBrew has to be open, with this module added. `tv.mjs` signs the widget, serves it on
+the LAN for one download, and asks the module's service, through TizenBrew's DevTools, to
+install it with the TV's own sdb. The certificate stays on the PC. Any other widget can be
+installed the same way.
 
 ## How it works
 
@@ -40,8 +56,10 @@ protected streams, is Apache-2.0.
 
 ## Development
 
-`node test-service.mjs` runs the service against a fake release. `publish.sh <owner/repo> <build-dir> <kodi-source-dir>`
-uploads a build as the release `service.js` downloads from.
+`node test-service.mjs` runs the service against a fake release and a fake sdb;
+`node tools/test-tv.mjs` checks the signing. `publish.sh <owner/repo> <build-dir> <kodi-source-dir>`
+uploads a build as the release `service.js` downloads from (`DRY_RUN=1` stops before the
+upload and keeps the files). It refuses a build made with `FAST_LINK=1`.
 
 TizenBrew gets `service.js` and `app/` from jsDelivr, whose alias for the newest tag can
 lag for hours, and starts a module's service only once per run of its service process,
