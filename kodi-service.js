@@ -31,44 +31,6 @@ function log(msg) {
   if (status.log.length > 20) status.log.shift();
 }
 
-// Probe whether this Node service can run native code (gate for a native media helper).
-// Served on /cap; writes and runs only inside the app's own data dir.
-function nativecap() {
-  function step(name, fn) {
-    try { return { step: name, ok: true, value: fn() }; }
-    catch (e) { return { step: name, ok: false, error: String(e && e.message || e) }; }
-  }
-  var out = { node: process.version, arch: process.arch, platform: process.platform, data: DATA, steps: [] };
-  var cp = null;
-  out.steps.push(step('require child_process', function () { cp = require('child_process'); return 'ok'; }));
-  if (cp) {
-    ['id', 'uname'].forEach(function (bin) {
-      out.steps.push(step('spawnSync ' + bin, function () {
-        var r = cp.spawnSync(bin, bin === 'uname' ? ['-a'] : [], { encoding: 'utf8' });
-        return { status: r.status, err: r.error && String(r.error.code || r.error.message), out: (r.stdout || '').slice(0, 160) };
-      }));
-    });
-  }
-  out.steps.push(step('typeof process.dlopen', function () { return typeof process.dlopen; }));
-  var sh = path.join(DATA, 'nativecap-exectest.sh');
-  out.steps.push(step('write+chmod exectest.sh', function () {
-    mkdirp(DATA); fs.writeFileSync(sh, '#!/bin/sh\necho EXEC_OK\n'); fs.chmodSync(sh, 0o755);
-    return fs.statSync(sh).mode.toString(8);
-  }));
-  if (cp) {
-    out.steps.push(step('spawnSync ./exectest.sh', function () {
-      var r = cp.spawnSync(sh, [], { encoding: 'utf8' });
-      return { status: r.status, err: r.error && String(r.error.code || r.error.message), out: (r.stdout || '').trim().slice(0, 80) };
-    }));
-    out.steps.push(step('spawnSync /bin/sh exectest.sh', function () {
-      var r = cp.spawnSync('/bin/sh', [sh], { encoding: 'utf8' });
-      return { status: r.status, err: r.error && String(r.error.code || r.error.message), out: (r.stdout || '').trim().slice(0, 80) };
-    }));
-  }
-  try { fs.unlinkSync(sh); } catch (e) {}
-  return out;
-}
-
 // An exception in a stream callback would leave its promise pending forever, so callbacks
 // report it as the download's error instead.
 function guard(reject, fn) {
@@ -357,7 +319,6 @@ var server = http.createServer(function (req, res) {
     reloadSelf();
     return;
   }
-  if (req.url === '/cap') { res.end(JSON.stringify(nativecap(), null, 1)); return; }
   // The page asks for /status until Kodi is ready, then tries to open it itself, which
   // Chromium blocks; so the service opens it.
   if (req.url === '/status' && status.state === 'ready') openKodi();
