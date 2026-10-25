@@ -151,16 +151,23 @@ function install() {
 
 // 8082 was taken by v0.0.1 of this service, which cannot be asked to hand it over.
 var PORT = 8083;
+// Also closes the connections the page keeps open, so its next request reaches the newer
+// copy instead of this one.
+function closeServer(then) {
+  server.close(then);
+  if (server.closeAllConnections) setImmediate(function () { server.closeAllConnections(); });
+}
+
 var server = http.createServer(function (req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
-  if (req.url === '/shutdown') { stop(); res.end('{}'); return server.close(); }
+  if (req.url === '/shutdown') { stop(); res.end('{}'); return closeServer(); }
   // The module's page asks for this each time it opens, so the loader runs the newest
   // copy of this file. A download in progress stops; the new copy resumes it.
   if (req.url === '/reload') {
     var ok = typeof reload === 'function';
     res.end(JSON.stringify({ reloading: ok }));
-    if (ok) { stop(); server.close(function () { reload(); }); }
+    if (ok) { stop(); closeServer(reload); }
     return;
   }
   res.end(JSON.stringify(status));
@@ -177,7 +184,11 @@ server.listen(PORT, '127.0.0.1');
 
 // Only once the port is ours: an older copy that held it has stopped its download by then.
 server.once('listening', function () {
-  install().catch(function (e) { status.state = 'error'; status.error = String(e && e.stack || e); log('error ' + e); });
+  install().catch(function (e) {
+    // Being stopped for a newer copy is not an error the page should show.
+    if (stopped) { status.state = 'stopped'; log('stopped'); return; }
+    status.state = 'error'; status.error = String(e && e.stack || e); log('error ' + e);
+  });
 });
 
 module.exports = { status: status, server: server };

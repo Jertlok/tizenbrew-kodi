@@ -55,6 +55,7 @@ fs.rmSync(path.join(dir, 'kodi.wasm')); fs.rmSync(path.join(dir, '.complete'));
 const svc = run();
 await until(() => svc.current() && svc.current().server.listening);
 assert.equal(old.current().server.listening, false);   // the old copy handed the port over
+assert.notEqual(old.current().status.state, 'error');
 
 const first = svc.current();
 await until(() => first.status.state === 'ready' || first.status.state === 'error');
@@ -72,6 +73,7 @@ serviceCode = serviceCode.replace('node: process.version,', 'node: process.versi
 assert.equal((await (await fetch('http://127.0.0.1:8083/reload')).json()).reloading, true);
 await until(() => svc.current() !== first && svc.current().server.listening);
 assert.equal((await status()).reloaded, true);
+assert.equal(first.status.state, 'ready');   // a copy that was already done keeps its state
 assert.equal((await status()).state, 'ready');   // already installed: no new download
 
 svc.current().server.close(); release.close();
