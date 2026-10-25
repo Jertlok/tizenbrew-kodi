@@ -472,6 +472,7 @@ var server = http.createServer(function (req, res) {
   }
   // The page asks for /status until Kodi is ready, then tries to open it itself, which
   // Chromium blocks; so the service opens it.
+  // Any other path (tools/tv.mjs asks /status?peek) only reports the status.
   if (req.url === '/status' && status.state === 'ready') openKodi();
   res.end(JSON.stringify(status));
 });

@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
+import net from 'node:net';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -63,19 +64,25 @@ function localAddressTowards(host) {
   });
 }
 
-// TizenBrew runs its pages with DevTools on a random port of the TV.
-async function findDevtools(tv) {
-  const hit = async (port) => {
-    try { return { port, list: await (await fetch(`http://${tv}:${port}/json/list`, { signal: AbortSignal.timeout(800) })).json() }; } catch { return null; }
-  };
-  for (let p = 1024; p < 65536; p += 400) {
-    const found = (await Promise.all(Array.from({ length: Math.min(400, 65536 - p) }, (_, i) => hit(p + i)))).find(Boolean);
-    if (found) return found;
+// TizenBrew runs its pages with DevTools on a random port of the TV. HTTP to every port at
+// once overwhelms the TV, so open TCP ports are found first, and only those are asked.
+export async function findDevtools(tv) {
+  const open = [];
+  const probe = (port) => new Promise((resolve) => {
+    const s = net.connect(port, tv);
+    s.setTimeout(1500);
+    s.on('connect', () => { open.push(port); s.destroy(); resolve(); });
+    s.on('error', resolve);
+    s.on('timeout', () => { s.destroy(); resolve(); });
+  });
+  for (let p = 1024; p < 65536; p += 1000) await Promise.all(Array.from({ length: Math.min(1000, 65536 - p) }, (_, i) => probe(p + i)));
+  for (const port of open) {
+    try { return { port, list: await (await fetch(`http://${tv}:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json() }; } catch { }
   }
   throw new Error('no DevTools on ' + tv + ': is TizenBrew open?');
 }
 
-async function devtools(target, tv) {
+export async function devtools(target, tv) {
   const ws = new WebSocket(target.webSocketDebuggerUrl.replace(/\/\/[^/]+/, '//' + tv + ':' + new URL(target.webSocketDebuggerUrl).port));
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('DevTools WebSocket failed')); });
   let id = 0;
@@ -93,7 +100,7 @@ async function devtools(target, tv) {
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const status = "fetch('http://127.0.0.1:8083/status').then((r) => r.json())";
+const status = "fetch('http://127.0.0.1:8083/status?peek').then((r) => r.json())";
 
 // Starts the Kodi module's service through TizenBrew's own WebSocket, as its UI does.
 const startService = `(async () => {
