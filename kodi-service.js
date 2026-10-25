@@ -10,6 +10,7 @@ var fs = require('fs');
 var path = require('path');
 var http = require('http');
 var https = require('https');
+var crypto = require('crypto');
 
 // The GitHub release holding the Kodi build. Module code is released under its own tags
 // (jsDelivr serves TizenBrew the newest one), so a module update does not download Kodi again.
@@ -192,13 +193,57 @@ function reloadSelf() {
 // to a file:// URL ("Not allowed to load local resource"), but DevTools' Page.navigate
 // may. TizenBrew runs its pages with DevTools open on a random port of the TV, which it
 // uses itself; this finds the port and has the module's page open Kodi.
-var WS = (function () {
-  try { return require('ws-new'); } catch (e) {}   // TizenBrew's copy of the ws package
-  try { return require('ws'); } catch (e) {}
-  return null;
-})();
 var devtoolsPort = 0;
 var opening = false;
+
+function devtoolsCall(wsUrl, method, params, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    var u = new URL(wsUrl);
+    var req = http.request({
+      host: u.hostname, port: u.port, path: u.pathname,
+      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13',
+                 'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64') }
+    });
+    var timer = setTimeout(function () { req.destroy(); reject(new Error('no answer from DevTools')); }, timeoutMs || 10000);
+    req.on('error', function (e) { clearTimeout(timer); reject(e); });
+    req.on('response', function (res) { clearTimeout(timer); res.resume(); reject(new Error('DevTools refused the WebSocket: HTTP ' + res.statusCode)); });
+    req.on('upgrade', function (res, socket, head) {
+      var payload = Buffer.from(JSON.stringify({ id: 1, method: method, params: params || {} }));
+      var mask = crypto.randomBytes(4), len = payload.length, header;
+      if (len < 126) header = Buffer.from([0x81, 0x80 | len]);
+      else if (len < 65536) { header = Buffer.from([0x81, 0x80 | 126, 0, 0]); header.writeUInt16BE(len, 2); }
+      else { header = Buffer.alloc(10); header[0] = 0x81; header[1] = 0x80 | 127; header.writeBigUInt64BE(BigInt(len), 2); }
+      for (var i = 0; i < len; i++) payload[i] ^= mask[i % 4];
+      socket.write(Buffer.concat([header, mask, payload]));
+
+      var buf = head && head.length ? head : Buffer.alloc(0), text = '';
+      function done(err, value) { clearTimeout(timer); socket.destroy(); err ? reject(err) : resolve(value); }
+      socket.on('data', function (chunk) {
+        buf = Buffer.concat([buf, chunk]);
+        // Parse whole frames; replies from the server are not masked.
+        while (buf.length >= 2) {
+          var fin = buf[0] & 0x80, opcode = buf[0] & 0x0f, n = buf[1] & 0x7f, off = 2;
+          if (n === 126) { if (buf.length < 4) return; n = buf.readUInt16BE(2); off = 4; }
+          else if (n === 127) { if (buf.length < 10) return; n = Number(buf.readBigUInt64BE(2)); off = 10; }
+          if (buf.length < off + n) return;
+          var data = buf.slice(off, off + n);
+          buf = buf.slice(off + n);
+          if (opcode === 0x8) return done(new Error('DevTools closed the connection'));
+          if (opcode === 0x1 || opcode === 0x0) {
+            text += data.toString('utf8');
+            if (!fin) continue;
+            var msg;
+            try { msg = JSON.parse(text); } catch (e) { return done(e); }
+            text = '';
+            if (msg.id === 1) return done(null, msg);
+          }
+        }
+      });
+      socket.on('error', function (e) { done(e); });
+    });
+    req.end();
+  });
+}
 
 function devtoolsList(port) {
   return new Promise(function (resolve) {
@@ -247,21 +292,10 @@ function openKodi() {
   log('opening Kodi');
   findDevtools().then(function (d) {
     if (!d) throw new Error('DevTools of TizenBrew not found');
-    if (!WS) throw new Error('no WebSocket client in TizenBrew');
     var page = d.list.filter(function (t) { return t.type === 'page' && t.url.indexOf('tizenbrew-kodi') >= 0; })[0];
     if (!page) throw new Error('module page not found among ' + d.list.length + ' DevTools targets');
-    return new Promise(function (resolve, reject) {
-      var ws = new WS(page.webSocketDebuggerUrl);
-      var timer = setTimeout(function () { ws.terminate(); reject(new Error('no answer from DevTools')); }, 10000);
-      ws.on('open', function () { ws.send(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: status.url } })); });
-      ws.on('message', function (m) {
-        var r = JSON.parse(m);
-        if (r.id !== 1) return;
-        clearTimeout(timer); ws.close();
-        if (r.error || (r.result && r.result.errorText)) reject(new Error((r.error && r.error.message) || r.result.errorText));
-        else resolve();
-      });
-      ws.on('error', function (e) { clearTimeout(timer); reject(e); });
+    return devtoolsCall(page.webSocketDebuggerUrl, 'Page.navigate', { url: status.url }).then(function (r) {
+      if (r.error || (r.result && r.result.errorText)) throw new Error((r.error && r.error.message) || r.result.errorText);
     });
   }).then(function () { log('opened Kodi'); }, function (e) { log('could not open Kodi: ' + e.message); })
     .then(function () { opening = false; });
