@@ -23,9 +23,14 @@ const data = fs.mkdtempSync(path.join(os.tmpdir(), 'kodi-svc-'));
 process.env.KODI_DATA_DIR = data;
 const src = fs.readFileSync(new URL('./service.js', import.meta.url), 'utf8')
   .replace('https://github.com/Jertlok/tizenbrew-kodi/', `http://127.0.0.1:${release.address().port}/`);
-const sandbox = { require: createRequire(import.meta.url), module: { exports: {} }, process, URL, Buffer, console };
-vm.runInContext(src, vm.createContext(sandbox));
-const { status, server } = sandbox.module.exports;
+// Like TizenBrew's serviceLauncher.js: every global, plus require and module.
+const run = () => { const sandbox = {};
+  for (const k of Object.getOwnPropertyNames(globalThis)) if (!['global', 'module'].includes(k)) sandbox[k] = globalThis[k];
+  Object.assign(sandbox, { require: createRequire(import.meta.url), module: { exports: {} } });
+  vm.runInContext(src, vm.createContext(sandbox)); return sandbox.module.exports; };
+const old = run();   // an older copy still holding the port, as after a module update
+await new Promise((r) => old.server.on('listening', r));
+const { status, server } = run();
 
 for (let i = 0; i < 100 && status.state !== 'ready' && status.state !== 'error'; i++) await new Promise((r) => setTimeout(r, 50));
 assert.equal(status.error, null);
@@ -35,7 +40,9 @@ const dir = path.join(data, 'kodi', 'v0.0.1');
 for (const f of ['index.html', 'kodi.wasm', 'media/splash.jpg']) assert.equal(fs.readFileSync(path.join(dir, f), 'utf8'), files[f]);
 assert.ok(fs.existsSync(path.join(dir, '.complete')));
 assert.equal(status.url, 'file://' + dir + '/index.html');
-assert.equal((await (await fetch('http://127.0.0.1:8082/status')).json()).state, 'ready');
+await new Promise((r) => (server.listening ? r() : server.on('listening', r)));
+assert.equal(old.server.listening, false);   // the old copy handed the port over
+assert.equal((await (await fetch('http://127.0.0.1:8083/status')).json()).state, 'ready');
 
 server.close(); release.close();
 fs.rmSync(data, { recursive: true });

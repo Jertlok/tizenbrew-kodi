@@ -19,7 +19,7 @@ Kodi's WASM build needs `SharedArrayBuffer`. On the TV, the web engine only give
 `file://` documents: pages served over http, even from `127.0.0.1` with COOP/COEP headers,
 are not cross-origin isolated. So `service.js`, which TizenBrew runs in its Node service,
 downloads the build into `/opt/usr/home/owner/apps_rw/<TizenBrew package>/data/kodi/<version>/`
-and serves its progress on `http://127.0.0.1:8082/status`. `app/index.html` shows the
+and serves its progress on `http://127.0.0.1:8083/status`. `app/index.html` shows the
 progress and then navigates to Kodi's `index.html` there. The Tizen WASM Player, which Kodi
 decodes video with, is available on those pages.
 
@@ -42,7 +42,7 @@ protected streams, is Apache-2.0.
 uploads a build as the release `service.js` downloads from.
 
 TizenBrew gets the module from jsDelivr, which serves the newest semver tag of this repo,
-not `main`. So a module change goes out by tagging it (`git tag v0.0.3 && git push --tags`).
+not `main`. So a module change goes out by tagging it (`git tag v0.0.4 && git push --tags`).
 The Kodi build is a separate release, named by `KODI_RELEASE` in `service.js`.
 
 ## Licence

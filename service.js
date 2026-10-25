@@ -4,7 +4,7 @@
 // Kodi's WASM build needs SharedArrayBuffer, which the TV's web engine only gives to
 // file:// documents (COOP/COEP headers do not isolate an http page there). So the
 // service downloads the build into TizenBrew's data directory once, and the module's
-// page then navigates to it. Progress is served on http://127.0.0.1:8082/status.
+// page then navigates to it. Progress is served on http://127.0.0.1:8083/status.
 
 var fs = require('fs');
 var path = require('path');
@@ -106,14 +106,23 @@ function install() {
   });
 }
 
+// 8082 was taken by v0.0.1 of this service, which cannot be asked to hand it over.
+var PORT = 8083;
 var server = http.createServer(function (req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
+  if (req.url === '/shutdown') { res.end('{}'); return server.close(); }
   res.end(JSON.stringify(status));
 });
-// TizenBrew may start the service again in the same process; the first one keeps serving.
-server.on('error', function (e) { if (e.code !== 'EADDRINUSE') status.error = String(e); });
-server.listen(8082, '127.0.0.1');
+// TizenBrew's service process outlives the TizenBrew app, so an older copy of this service
+// (from before a module update) may still hold the port: ask it to close, then retry.
+var listenTries = 0;
+server.on('error', function (e) {
+  if (e.code !== 'EADDRINUSE' || ++listenTries > 10) { status.error = String(e); return; }
+  http.get('http://127.0.0.1:' + PORT + '/shutdown', function (res) { res.resume(); }).on('error', function () {});
+  setTimeout(function () { server.listen(PORT, '127.0.0.1'); }, 500);
+});
+server.listen(PORT, '127.0.0.1');
 
 install().catch(function (e) { status.state = 'error'; status.error = String(e && e.stack || e); log('error ' + e); });
 

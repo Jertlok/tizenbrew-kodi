@@ -19,7 +19,7 @@
   // The service (service.js) downloads Kodi into TizenBrew's data directory; Kodi runs from
   // there because only file:// pages get SharedArrayBuffer on the TV.
   function poll() {
-    fetch('http://127.0.0.1:8082/status').then(function (r) { return r.json(); }).then(function (s) {
+    fetch('http://127.0.0.1:8083/status').then(function (r) { return r.json(); }).then(function (s) {
       if (s.state === 'ready') return location.replace(s.url);
       if (s.state === 'error') { document.getElementById('err').textContent = s.error; return; }
       if (s.total) {
