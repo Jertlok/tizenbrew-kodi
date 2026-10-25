@@ -58,8 +58,10 @@ const sdb = net.createServer((sock) => {
       if (cmd === 'OPEN') {
         sdbCommand = d.toString().replace(/\0$/, '');
         sdbSawFile = fs.existsSync(sdbCommand.split(' ').pop());
-        sock.write(Buffer.concat([pkt('OKAY', 77, local), pkt('WRTE', 77, local, Buffer.from('install KodiWasmTv\n')),
-                                  pkt('WRTE', 77, local, Buffer.from('spend time for wascmd is [1200]ms\n'))]));
+        sock.write(/ debug /.test(sdbCommand)
+          ? Buffer.concat([pkt('OKAY', 77, local), pkt('WRTE', 77, local, Buffer.from('... successfully launched pid = 1 with debug 1 port: 41234\n'))])
+          : Buffer.concat([pkt('OKAY', 77, local), pkt('WRTE', 77, local, Buffer.from('install KodiWasmTv\n')),
+                           pkt('WRTE', 77, local, Buffer.from('spend time for wascmd is [1200]ms\n'))]));
       }
     }
   });
@@ -128,7 +130,7 @@ devtools.close();
 
 // /install: refused without the module page's origin; with it, the widget is fetched and
 // handed to sdb, then removed.
-const ask = (q, origin) => new Promise((resolve) => http.get({ host: '127.0.0.1', port: 8083, path: '/install?' + q,
+const ask = (q, origin, route = '/install?') => new Promise((resolve) => http.get({ host: '127.0.0.1', port: 8083, path: route + q,
   headers: origin ? { origin } : {} }, (res) => { let t = ''; res.on('data', (c) => t += c); res.on('end', () => resolve([res.statusCode, JSON.parse(t)])); }));
 const q = 'id=KodiWasmTv&url=' + encodeURIComponent(base + 'releases/download/v0.0.2/Kodi.wgt');
 assert.equal((await ask(q))[0], 400);
@@ -143,6 +145,12 @@ assert.match(inst.output, /spend time/);
 assert.equal(sdbCommand, 'shell:0 vd_appinstall KodiWasmTv ' + path.join(data, 'sdk_tools', 'tizenbrew-kodi-install.wgt'));
 assert.ok(sdbSawFile);
 assert.deepEqual(fs.readdirSync(path.join(data, 'sdk_tools')), []);
+
+// /debug: starts an app with DevTools through sdb and replies with the port.
+assert.equal((await ask('app=KodiWasmTv.Kodi', null, '/debug?'))[0], 400);
+assert.equal((await ask('app=KodiWasmTv.Kodi;reboot', 'http://127.0.0.1:8081', '/debug?'))[0], 400);
+assert.deepEqual(await ask('app=KodiWasmTv.Kodi', 'http://127.0.0.1:8081', '/debug?'), [200, { port: 41234 }]);
+assert.equal(sdbCommand, 'shell:0 debug KodiWasmTv.Kodi');
 
 const loaderLog = await (await fetch('http://127.0.0.1:8084')).json();
 assert.match(loaderLog.events.join('\n'), /got \d+ bytes in \d+ ms, starting it/);

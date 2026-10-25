@@ -381,7 +381,10 @@ status.install = null;
 
 // Runs one shell command through sdb, which speaks the ADB protocol: CNXN, then OPEN of
 // "shell:<command>", whose output comes in WRTE packets that each need an OKAY.
-function sdbShell(command, timeoutMs) {
+// The output is complete once it matches done (vd_appinstall may leave the stream open
+// after its last line).
+function sdbShell(command, timeoutMs, done) {
+  done = done || /spend time/;
   return new Promise(function (resolve, reject) {
     var sock = net.connect(SDB_PORT, '127.0.0.1'), buf = Buffer.alloc(0), out = '', ended = false;
     var timer = setTimeout(function () { finish(new Error('sdb: no end after ' + timeoutMs / 1000 + ' s')); }, timeoutMs);
@@ -411,8 +414,7 @@ function sdbShell(command, timeoutMs) {
         else if (cmd === 'WRTE') {
           out += data.toString('utf8');
           packet('OKAY', 1, remote);
-          // vd_appinstall may leave the stream open after its last line.
-          if (out.indexOf('spend time') >= 0) return finish();
+          if (done.test(out)) return finish();
         } else if (cmd === 'CLSE') return finish();
       }
     });
@@ -462,6 +464,25 @@ var server = http.createServer(function (req, res) {
     if (why) { res.statusCode = 400; return res.end(JSON.stringify({ error: why })); }
     installWidget(url, id);
     return res.end('{"installing":true}');
+  }
+  // Starts an installed app with its DevTools open, as TizenBrew starts itself, so that
+  // tools/tv.mjs can debug apps outside TizenBrew. Replies with the DevTools port.
+  if (req.url.indexOf('/debug?') === 0) {
+    var app = new URL(req.url, 'http://127.0.0.1').searchParams.get('app') || '';
+    // It goes into a shell command: <package id>.<name>.
+    if (req.headers.origin !== PAGE_ORIGIN || !/^[A-Za-z0-9]{10}\.[A-Za-z0-9_]+$/.test(app)) {
+      res.statusCode = 400;
+      return res.end('{"error":"only the module page may debug apps, by app id"}');
+    }
+    sdbShell('0 debug ' + app, 30000, /port\s*:\s*\d+/).then(function (out) {
+      var m = /port\s*:\s*(\d+)/.exec(out);
+      if (!m) throw new Error('sdb: ' + (out.trim() || 'no output'));
+      res.end(JSON.stringify({ port: Number(m[1]) }));
+    }).catch(function (e) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: e.message }));
+    });
+    return;
   }
   // The module's page asks for this each time it opens, so the loader runs the newest
   // copy of this file. A download in progress stops; the new copy resumes it.
