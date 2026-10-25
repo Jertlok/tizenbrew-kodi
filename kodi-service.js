@@ -17,7 +17,7 @@ var stream = require('stream');
 
 // The GitHub release holding the Kodi build. Module code is released under its own tags
 // (jsDelivr serves TizenBrew the newest one), so a module update does not download Kodi again.
-var KODI_RELEASE = 'v0.0.2';
+var KODI_RELEASE = 'v0.0.3';
 var BASE = 'https://github.com/Jertlok/tizenbrew-kodi/releases/download/' + KODI_RELEASE + '/';
 var DATA = (typeof tizen === 'object')
   ? '/opt/usr/home/owner/apps_rw/' + tizen.application.getAppInfo().packageId + '/data'
