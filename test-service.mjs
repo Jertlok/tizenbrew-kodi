@@ -13,6 +13,8 @@ import vm from 'node:vm';
 import zlib from 'node:zlib';
 import { createRequire } from 'node:module';
 
+// The release the service downloads, as publish.sh reads it.
+const RELEASE = /^var KODI_RELEASE = '(.*)';/m.exec(fs.readFileSync(new URL('./kodi-service.js', import.meta.url), 'utf8'))[1];
 const wasm = Buffer.from(Array.from({ length: 300000 }, (_, i) => i * 7 % 251));
 const files = { 'files.txt': 'index.html\nkodi.wasm.gz\nmedia/splash.jpg\n', 'index.html': '<p>kodi</p>',
                 'kodi.wasm.gz': zlib.gzipSync(wasm, { level: 0 }), 'media/splash.jpg': 'jpg', 'Kodi.wgt': 'PK widget' };
@@ -22,7 +24,7 @@ let serviceCode;
 let wasmRequests = 0;
 const release = http.createServer((req, res) => {
   if (req.url.startsWith('/kodi-service.js?')) return res.end(serviceCode);
-  const m = req.url.match(/^\/releases\/download\/v0\.0\.2\/(.+)$/);
+  const m = req.url.match(new RegExp('^/releases/download/' + RELEASE + '/(.+)$'));
   if (m) { res.writeHead(302, { location: '/storage/' + m[1] }); return res.end(); }
   const name = decodeURIComponent(req.url.replace('/storage/', '')).replace(/__/g, '/');
   if (!(name in files)) { res.writeHead(404); return res.end(); }
@@ -82,11 +84,11 @@ const run = () => { const sandbox = {};
 const until = async (f) => { for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 50)); assert.ok(f()); };
 const status = async () => (await fetch('http://127.0.0.1:8083/status')).json();
 
-const dir = path.join(data, 'kodi', 'v0.0.2');
+const dir = path.join(data, 'kodi', RELEASE);
 const old = run();   // an older copy still holding the port, as after a module update
 await until(() => old.current() && old.current().status.state === 'ready');
 // Make the second copy download kodi.wasm again.
-assert.deepEqual(fs.readdirSync(path.join(data, 'kodi')), ['v0.0.2']);
+assert.deepEqual(fs.readdirSync(path.join(data, 'kodi')), [RELEASE]);
 fs.rmSync(path.join(dir, 'kodi.wasm')); fs.rmSync(path.join(dir, '.complete'));
 const svc = run();
 await until(() => svc.current() && svc.current().server.listening);
@@ -132,7 +134,7 @@ devtools.close();
 // handed to sdb, then removed.
 const ask = (q, origin, route = '/install?') => new Promise((resolve) => http.get({ host: '127.0.0.1', port: 8083, path: route + q,
   headers: origin ? { origin } : {} }, (res) => { let t = ''; res.on('data', (c) => t += c); res.on('end', () => resolve([res.statusCode, JSON.parse(t)])); }));
-const q = 'id=KodiWasmTv&url=' + encodeURIComponent(base + 'releases/download/v0.0.2/Kodi.wgt');
+const q = 'id=KodiWasmTv&url=' + encodeURIComponent(base + 'releases/download/' + RELEASE + '/Kodi.wgt');
 assert.equal((await ask(q))[0], 400);
 assert.equal((await ask(q, 'http://evil.example'))[0], 400);
 assert.equal((await ask('id=Kodi;reboot&url=' + encodeURIComponent(base), 'http://127.0.0.1:8081'))[0], 400);
