@@ -87,8 +87,9 @@ const status = async () => (await fetch('http://127.0.0.1:8083/status')).json();
 const dir = path.join(data, 'kodi', RELEASE);
 const old = run();   // an older copy still holding the port, as after a module update
 await until(() => old.current() && old.current().status.state === 'ready');
+// The older release stays until Kodi is opened on the new one: a running Kodi may need it.
+assert.deepEqual(fs.readdirSync(path.join(data, 'kodi')).sort(), [RELEASE, 'v0.0.0'].sort());
 // Make the second copy download kodi.wasm again.
-assert.deepEqual(fs.readdirSync(path.join(data, 'kodi')), [RELEASE]);
 fs.rmSync(path.join(dir, 'kodi.wasm')); fs.rmSync(path.join(dir, '.complete'));
 const svc = run();
 await until(() => svc.current() && svc.current().server.listening);

@@ -185,7 +185,6 @@ function install() {
   }).then(function () {
     fs.writeFileSync(DONE, KODI_RELEASE);
     status.state = 'ready';
-    removeOldReleases();
   });
 }
 
@@ -359,7 +358,12 @@ function openKodi() {
     return devtoolsCall(page.webSocketDebuggerUrl, 'Page.navigate', { url: status.url }).then(function (r) {
       if (r.error || (r.result && r.result.errorText)) throw new Error((r.error && r.error.message) || r.result.errorText);
     });
-  }).then(function () { log('opened Kodi'); }, function (e) { log('could not open Kodi: ' + e.message); })
+  }).then(function () {
+    log('opened Kodi');
+    // Only now: until the page shows this release, it may still run an older one, which
+    // reloads from its own files after a crash.
+    removeOldReleases();
+  }, function (e) { log('could not open Kodi: ' + e.message); })
     .then(function () { opening = false; });
 }
 
