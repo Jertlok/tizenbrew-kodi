@@ -465,6 +465,12 @@ var server = http.createServer(function (req, res) {
     installWidget(url, id);
     return res.end('{"installing":true}');
   }
+  // The TV's TCP connections, to debug apps whose sockets hang (pages cannot read /proc).
+  if (req.url === '/tcp') {
+    return res.end(JSON.stringify(['/proc/net/tcp', '/proc/net/tcp6'].map(function (file) {
+      try { return fs.readFileSync(file, 'utf8'); } catch (e) { return ''; }
+    })));
+  }
   // Starts an installed app with its DevTools open, as TizenBrew starts itself, so that
   // tools/tv.mjs can debug apps outside TizenBrew. Replies with the DevTools port.
   if (req.url.indexOf('/debug?') === 0) {
