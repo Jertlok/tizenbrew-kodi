@@ -19,7 +19,22 @@ var DATA = (typeof tizen === 'object')
 var DIR = path.join(DATA, 'kodi', VERSION);
 var DONE = path.join(DIR, '.complete');
 
-var status = { state: 'starting', done: 0, total: 0, bytes: 0, error: null, url: 'file://' + DIR + '/index.html' };
+var status = { state: 'starting', done: 0, total: 0, bytes: 0, error: null, url: 'file://' + DIR + '/index.html',
+               node: process.version, log: [] };
+
+// The last download events, served with the status: the TV gives no other view of them.
+function log(msg) {
+  status.log.push(new Date().toISOString().slice(11, 19) + ' ' + msg);
+  if (status.log.length > 20) status.log.shift();
+}
+
+// An exception in a stream callback would leave its promise pending forever, so callbacks
+// report it as the download's error instead.
+function guard(reject, fn) {
+  return function () {
+    try { return fn.apply(this, arguments); } catch (e) { reject(e); }
+  };
+}
 
 function mkdirp(dir) {
   if (fs.existsSync(dir)) return;
@@ -45,15 +60,23 @@ function get(url, redirects) {
 function download(name) {
   var dest = path.join(DIR, name);
   mkdirp(path.dirname(dest));
+  log('get ' + name);
   // Release assets are flat: publish.sh uploads media/splash.jpg as media__splash.jpg.
   return get(BASE + encodeURIComponent(name.replace(/\//g, '__'))).then(function (res) {
+    log('response ' + res.statusCode + ', ' + (res.headers['content-length'] || '?') + ' bytes');
     return new Promise(function (resolve, reject) {
       var out = fs.createWriteStream(dest + '.part');
-      res.on('data', function (chunk) { status.bytes += chunk.length; });
-      res.on('error', reject);
       out.on('error', reject);
-      out.on('finish', function () { fs.renameSync(dest + '.part', dest); resolve(); });
-      res.pipe(out);
+      res.on('error', reject);
+      res.on('data', guard(reject, function (chunk) { status.bytes += chunk.length; out.write(chunk); }));
+      res.on('end', guard(reject, function () {
+        log('received ' + name);
+        out.end(guard(reject, function () {
+          fs.renameSync(dest + '.part', dest);
+          log('saved ' + name);
+          resolve();
+        }));
+      }));
     });
   });
 }
@@ -90,6 +113,6 @@ var server = http.createServer(function (req, res) {
 server.on('error', function (e) { if (e.code !== 'EADDRINUSE') status.error = String(e); });
 server.listen(8082, '127.0.0.1');
 
-install().catch(function (e) { status.state = 'error'; status.error = String(e && e.message || e); });
+install().catch(function (e) { status.state = 'error'; status.error = String(e && e.stack || e); log('error ' + e); });
 
 module.exports = { status: status, server: server };
