@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Kodi</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #12181f; color: #e8eef4; font: 32px sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; }
+  #bar { width: 50%; height: 12px; background: #2a3440; border-radius: 6px; overflow: hidden; }
+  #fill { width: 0; height: 100%; background: #17b2e7; transition: width .3s; }
+  #err { color: #ff8a80; max-width: 70%; text-align: center; }
+</style>
+</head>
+<body>
+<div id="msg">Starting Kodi…</div>
+<div id="bar"><div id="fill"></div></div>
+<div id="err"></div>
+<script>
+  // The service (service.js) downloads Kodi into TizenBrew's data directory; Kodi runs from
+  // there because only file:// pages get SharedArrayBuffer on the TV.
+  function poll() {
+    fetch('http://127.0.0.1:8082/status').then(function (r) { return r.json(); }).then(function (s) {
+      if (s.state === 'ready') return location.replace(s.url);
+      if (s.state === 'error') { document.getElementById('err').textContent = s.error; return; }
+      if (s.total) {
+        document.getElementById('msg').textContent = 'Downloading Kodi (first start only): '
+          + s.done + ' / ' + s.total + ' files, ' + Math.round(s.bytes / 1e6) + ' MB';
+        document.getElementById('fill').style.width = (100 * s.done / s.total) + '%';
+      }
+      setTimeout(poll, 500);
+    }).catch(function () { setTimeout(poll, 500); });
+  }
+  poll();
+</script>
+</body>
+</html>
