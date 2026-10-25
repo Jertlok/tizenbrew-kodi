@@ -18,6 +18,20 @@ cat "$STAGE/files.txt"
 FLAT=$(mktemp -d)
 while read -r f; do cp "$STAGE/$f" "$FLAT/$(echo "$f" | sed 's|/|__|g')"; done < "$STAGE/files.txt"
 cp "$STAGE/files.txt" "$FLAT/"
+# The build leaves paths of the build machine in the binaries (OpenSSL and fontconfig
+# directories, source file names in log and assert strings); none is used on the TV,
+# which keeps Kodi's files under /kodi. Overwrite the workspace that holds the Kodi tree
+# and the work dir with /build padded with slashes to the same length: lengths in the
+# binary stay valid, and repeated slashes name the same path.
+WS=$(dirname "$(cd "$KODI" && pwd)")
+NEUTRAL=/build; while [ ${#NEUTRAL} -lt ${#WS} ]; do NEUTRAL="$NEUTRAL/"; done
+[ ${#NEUTRAL} -eq ${#WS} ] || { echo "error: workspace path $WS is shorter than /build" >&2; exit 1; }
+for f in "$FLAT"/*; do
+  WS="$WS" NEUTRAL="$NEUTRAL" perl -0777 -pi -e 's/\Q$ENV{WS}\E/$ENV{NEUTRAL}/g' "$f"
+done
+if grep -alF -e "$WS" -e "$HOME" "$FLAT"/*; then
+  echo "error: the files above still name a path of this machine; nothing was uploaded" >&2; exit 1
+fi
 # Not in files.txt, so the TV does not download it.
 git -C "$KODI" archive --format=tar.gz --prefix="kodi-tizen-wasm-$COMMIT/" -o "$FLAT/kodi-source-$COMMIT.tar.gz" HEAD
 gh release create "v$VERSION" -R "$REPO" -t "Kodi WASM $VERSION (unofficial)" -n "Unofficial Kodi WASM build for the tizenbrew-kodi module.
