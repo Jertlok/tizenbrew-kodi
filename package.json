@@ -8,5 +8,13 @@
   "appPath": "app/index.html",
   "serviceFile": "service.js",
   "keys": [],
-  "files": ["app/", "service.js", "kodi-service.js", "LICENSE"]
+  "files": [
+    "app/",
+    "service.js",
+    "kodi-service.js",
+    "LICENSE"
+  ],
+  "standalone": {
+    "wgt": "https://github.com/Jertlok/tizenbrew-kodi/releases/download/v0.0.2/Kodi.wgt"
+  }
 }
