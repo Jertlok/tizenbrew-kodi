@@ -31,7 +31,7 @@ for (let i = 0; i < 100 && status.state !== 'ready' && status.state !== 'error';
 assert.equal(status.error, null);
 assert.equal(status.state, 'ready');
 assert.equal(status.done, 3);
-const dir = path.join(data, 'kodi', '0.0.1');
+const dir = path.join(data, 'kodi', 'v0.0.1');
 for (const f of ['index.html', 'kodi.wasm', 'media/splash.jpg']) assert.equal(fs.readFileSync(path.join(dir, f), 'utf8'), files[f]);
 assert.ok(fs.existsSync(path.join(dir, '.complete')));
 assert.equal(status.url, 'file://' + dir + '/index.html');

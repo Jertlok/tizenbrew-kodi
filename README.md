@@ -41,6 +41,10 @@ protected streams, is Apache-2.0.
 `node test-service.mjs` runs the service against a fake release. `publish.sh <owner/repo> <build-dir> <kodi-source-dir>`
 uploads a build as the release `service.js` downloads from.
 
+TizenBrew gets the module from jsDelivr, which serves the newest semver tag of this repo,
+not `main`. So a module change goes out by tagging it (`git tag v0.0.3 && git push --tags`).
+The Kodi build is a separate release, named by `KODI_RELEASE` in `service.js`.
+
 ## Licence
 
 GPL-2.0-or-later, see [LICENSE](LICENSE).

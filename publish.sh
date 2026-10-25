@@ -8,7 +8,8 @@ USAGE='usage: publish.sh <owner/repo> <build-dir> <kodi-source-dir>'
 REPO=${1:?$USAGE}
 STAGE=${2:?$USAGE}/tizen-wgt
 KODI=${3:?$USAGE}
-VERSION=$(sed -n "s/^var VERSION = '\(.*\)';/\1/p" "$(dirname "$0")/service.js")
+# The release tag service.js downloads from; bump KODI_RELEASE there for a new Kodi build.
+TAG=$(sed -n "s/^var KODI_RELEASE = '\(.*\)';/\1/p" "$(dirname "$0")/service.js")
 COMMIT=$(git -C "$KODI" rev-parse HEAD)
 
 # config.xml belongs to the widget only; TizenBrew's own widget hosts the page.
@@ -36,7 +37,7 @@ fi
 git -C "$KODI" archive --format=tar.gz --prefix="kodi-tizen-wasm-$COMMIT/" -o "$FLAT/kodi-source-$COMMIT.tar.gz" HEAD
 # The build fixes made in the Kodi tree, which the archive (of the commit) does not have.
 git -C "$KODI" diff HEAD > "$FLAT/kodi-local-changes.patch"
-gh release create "v$VERSION" -R "$REPO" -t "Kodi WASM $VERSION (unofficial)" -n "Unofficial Kodi WASM build for the tizenbrew-kodi module.
+gh release create "$TAG" -R "$REPO" -t "Kodi WASM $TAG (unofficial)" -n "Unofficial Kodi WASM build for the tizenbrew-kodi module.
 
 Built with tools/wasm/tizen/build.sh from https://github.com/Ricrdsson1/kodi-tizen-wasm/tree/$COMMIT (GPL-2.0-or-later) plus the build fixes in kodi-local-changes.patch; the source is attached as kodi-source-$COMMIT.tar.gz. Shaka Player is Apache-2.0. Not endorsed by the XBMC Foundation." "$FLAT"/*
 rm -rf "$FLAT"

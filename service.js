@@ -11,12 +11,14 @@ var path = require('path');
 var http = require('http');
 var https = require('https');
 
-var VERSION = '0.0.1';
-var BASE = 'https://github.com/Jertlok/tizenbrew-kodi/releases/download/v' + VERSION + '/';
+// The GitHub release holding the Kodi build. Module code is released under its own tags
+// (jsDelivr serves TizenBrew the newest one), so a module update does not download Kodi again.
+var KODI_RELEASE = 'v0.0.1';
+var BASE = 'https://github.com/Jertlok/tizenbrew-kodi/releases/download/' + KODI_RELEASE + '/';
 var DATA = (typeof tizen === 'object')
   ? '/opt/usr/home/owner/apps_rw/' + tizen.application.getAppInfo().packageId + '/data'
   : process.env.KODI_DATA_DIR;
-var DIR = path.join(DATA, 'kodi', VERSION);
+var DIR = path.join(DATA, 'kodi', KODI_RELEASE);
 var DONE = path.join(DIR, '.complete');
 
 var status = { state: 'starting', done: 0, total: 0, bytes: 0, error: null, url: 'file://' + DIR + '/index.html',
@@ -99,7 +101,7 @@ function install() {
       return p.then(function () { return download(name); }).then(function () { status.done++; });
     }, Promise.resolve());
   }).then(function () {
-    fs.writeFileSync(DONE, VERSION);
+    fs.writeFileSync(DONE, KODI_RELEASE);
     status.state = 'ready';
   });
 }
