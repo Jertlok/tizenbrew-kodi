@@ -48,7 +48,7 @@ function mkdirp(dir) {
 // 200, and 206 for a request with a Range header.
 function get(url, headers, redirects) {
   return new Promise(function (resolve, reject) {
-    (url.indexOf('https:') === 0 ? https : http).get(url, { headers: headers || {} }, function (res) {
+    var req = (url.indexOf('https:') === 0 ? https : http).get(url, { headers: headers || {} }, function (res) {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         if ((redirects || 0) > 5) return reject(new Error('too many redirects: ' + url));
@@ -58,7 +58,11 @@ function get(url, headers, redirects) {
         res.resume(); return reject(new Error('HTTP ' + res.statusCode + ' ' + url));
       }
       resolve(res);
-    }).on('error', reject);
+    });
+    // Until the response starts; download() watches the body itself.
+    req.setTimeout(STALL_MS, function () { req.destroy(new Error('no response for ' + STALL_MS / 1000 + ' s: ' + url)); });
+    req.on('response', function () { req.setTimeout(0); });
+    req.on('error', reject);
   });
 }
 
@@ -151,6 +155,39 @@ function install() {
 
 // 8082 was taken by v0.0.1 of this service, which cannot be asked to hand it over.
 var PORT = 8083;
+// The newest copy of this file. The loader (service.js) can fetch it too, but without a
+// timeout, and a fetch that hangs there leaves no copy running at all. So this copy
+// fetches its successor itself and hands over only once it has the code.
+var SELF = process.env.KODI_SERVICE_SRC ||
+  'https://raw.githubusercontent.com/Jertlok/tizenbrew-kodi/main/kodi-service.js';
+var reloading = false;
+
+function reloadSelf() {
+  if (reloading) return;
+  reloading = true;
+  log('fetching the newest service code');
+  get(SELF + '?t=' + Date.now()).then(function (res) {
+    return new Promise(function (resolve, reject) {
+      var code = '';
+      res.setEncoding('utf8');
+      res.setTimeout(STALL_MS, function () { reject(new Error('no data for ' + STALL_MS / 1000 + ' s')); res.destroy(); });
+      res.on('data', function (c) { code += c; });
+      res.on('end', function () { resolve(code); });
+      res.on('error', reject);
+    });
+  }).then(function (code) {
+    stop();
+    closeServer(function () {
+      new Function('require', 'tizen', 'module', 'reload', code)(
+        require, typeof tizen === 'object' ? tizen : undefined, { exports: {} }, reload);
+    });
+  }).catch(function (e) {
+    // Keep running this copy; the page asks again next time Kodi is opened.
+    reloading = false;
+    log('reload failed: ' + e.message);
+  });
+}
+
 // Also closes the connections the page keeps open, so its next request reaches the newer
 // copy instead of this one.
 function closeServer(then) {
@@ -165,9 +202,8 @@ var server = http.createServer(function (req, res) {
   // The module's page asks for this each time it opens, so the loader runs the newest
   // copy of this file. A download in progress stops; the new copy resumes it.
   if (req.url === '/reload') {
-    var ok = typeof reload === 'function';
-    res.end(JSON.stringify({ reloading: ok }));
-    if (ok) { stop(); closeServer(reload); }
+    res.end('{"reloading":true}');
+    reloadSelf();
     return;
   }
   res.end(JSON.stringify(status));

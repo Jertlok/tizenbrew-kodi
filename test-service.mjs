@@ -71,11 +71,17 @@ assert.equal((await status()).state, 'ready');
 // /reload runs the newest service code: here a copy that marks its status.
 serviceCode = serviceCode.replace('node: process.version,', 'node: process.version, reloaded: true,');
 assert.equal((await (await fetch('http://127.0.0.1:8083/reload')).json()).reloading, true);
-await until(() => svc.current() !== first && svc.current().server.listening);
-assert.equal((await status()).reloaded, true);
+// The copy fetches its successor itself and hands the port over to it.
+let after = {};
+for (let i = 0; i < 100 && !after.reloaded; i++) {
+  await new Promise((r) => setTimeout(r, 50));
+  after = await status().catch(() => ({}));
+}
+assert.equal(after.reloaded, true);
+assert.equal(first.server.listening, false);
 assert.equal(first.status.state, 'ready');   // a copy that was already done keeps its state
 assert.equal((await status()).state, 'ready');   // already installed: no new download
 
-svc.current().server.close(); release.close();
+await fetch('http://127.0.0.1:8083/shutdown'); release.close();
 fs.rmSync(data, { recursive: true });
 console.log('ok');
