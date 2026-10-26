@@ -17,6 +17,7 @@ import { findDevtools, devtools } from './tv.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => (v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]]] : a), []));
 const tv = args.tv || process.env.TV_IP;
+if (!tv) { console.error('give the TV address: --tv <ip> or TV_IP'); process.exit(2); }
 const sdb = process.env.SDB || path.join(os.homedir(), '.local/opt/sdb-dl/data/tools/sdb');
 const STANDALONE = 'KodiWasmTv.Kodi';
 const LOG = '/home/web_user/.kodi/temp/kodi.log';
@@ -29,7 +30,8 @@ const observe = `(() => { window.__long = []; try { new PerformanceObserver((l) 
 // One sample. Kodi is only called after its first frame: before it, a call aborts Kodi.
 const sample = (off) => `(() => { const r = { now: performance.now(), long: window.__long.splice(0), off: ${off} };
   try { r.buf = Module.wasmMemory.buffer.byteLength; } catch (e) {}
-  if ((window.kodiStartup || []).some((m) => m[0] === 'first frame')) {
+  r.frame = (window.kodiStartup || []).some((m) => m[0] === 'first frame');
+  if (r.frame) {
     try { r.heap = Module.ccall('kodi_wasm_memory_usage', 'number', ['number'], [0]); r.workers = Module.kodiThreads(); } catch (e) { r.err = String(e).slice(0, 80); }
   }
   try { const n = FS.stat('${LOG}').size;
@@ -97,21 +99,22 @@ async function run() {
       }
       for (const [at, ms] of s.long) if (actionPerf !== null) res.longTasks.push({ at: Math.round(at - actionPerf), ms: Math.round(ms) });
       for (const [ts, line] of s.lines || []) {
-        if (res.homeMs === null && /initialize done/.test(line) && ts) {
-          res.homeMs = ts - origin;
-          // Home is up: run the action.
-          actionPerf = await d.evaluate('performance.now()');
-          actionWall = Date.now();
-          actionEpoch = await d.evaluate('Date.now()');
-          res.actionMs = Math.round(actionPerf);
-          sentAt = actionEpoch;
-          await d.evaluate(`Module.ccall('kodi_wasm_execute_builtin', null, ['string'], [${JSON.stringify((args.cmd || 'ActivateWindow(Videos,%s)').replace('%s', args.plugin))}])`);
-        } else if (actionEpoch !== null && ts >= sentAt && until.test(line)) {
+        if (res.homeMs === null && /initialize done/.test(line) && ts >= origin) res.homeMs = ts - origin;
+        else if (actionEpoch !== null && ts >= sentAt && until.test(line)) {
           res.logMatches.push(line.slice(0, 300));
           if (res.firstMatchMs === undefined) res.firstMatchMs = ts - actionEpoch;
           lastMatch = ts - actionEpoch; lastMatchWall = Date.now();
           if (!settle) res.doneMs = lastMatch;
         }
+      }
+      // Home is up and the first frame is out (a call into Kodi before it aborts Kodi): run the action.
+      if (res.homeMs !== null && actionEpoch === null && s.frame) {
+        actionPerf = await d.evaluate('performance.now()');
+        actionWall = Date.now();
+        actionEpoch = await d.evaluate('Date.now()');
+        res.actionMs = Math.round(actionPerf);
+        sentAt = actionEpoch;
+        await d.evaluate(`Module.ccall('kodi_wasm_execute_builtin', null, ['string'], [${JSON.stringify((args.cmd || 'ActivateWindow(Videos,%s)').replace('%s', args.plugin))}])`);
       }
       // With --settle, the run is done when no line has matched for that many seconds.
       if (settle && lastMatch !== null && Date.now() - lastMatchWall > settle * 1000) res.doneMs = lastMatch;
@@ -119,6 +122,8 @@ async function run() {
   } catch (e) { dead = true; res.error = e.message; }
   if (dead) crash();
   if (!dead && res.doneMs === null) res.timedOut = true;
+  // Matches without a quiet period (--settle) before the deadline still give a time.
+  if (res.doneMs === null && lastMatch !== null) res.doneMs = lastMatch;
   if (res.homeMs !== null) res.homeMs = Math.round(res.homeMs);
   try { d.close(); } catch {}
   return res;
