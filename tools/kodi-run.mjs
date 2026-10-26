@@ -5,6 +5,17 @@
 //   node tools/kodi-run.mjs --app tizenbrew|standalone --plugin '<plugin:// url>' \
 //        --until '<kodi.log regex>' --out <file.json> [--cmd 'RunPlugin(%s)'] [--settle s] [--wait s] [--runs N] [--timeout s] [--tv ip]
 //   node tools/kodi-run.mjs --app standalone --eval-python '<python code>' --out <file.json>
+//   node tools/kodi-run.mjs --app sim [--profile <dump.json>] [--addon <dir>] [--cpu 4] [--mem MB] ...
+//
+// --app sim runs on this PC instead of the TV: kodi-tizen-wasm's tools/wasm/tizen/tv-sim.mjs
+// (Chrome 120 as the TV, a build made with TV_SIM=1; see "TV simulation" in its README), a
+// fresh browser profile per run. --profile writes a dump of Kodi's FS (scratchpad fscopy.mjs
+// format: path -> base64 parts) and --addon an add-on directory into the profile, enables
+// the add-ons, and restarts Kodi before the run. --cpu (default 4) slows the CPU, --mem sets
+// the stand-in's memory (memMB), --kill the free memory under which it closes the app,
+// --sim-cfg '<json>' any other of its settings (tools/wasm/tv_sim_pre.js), e.g. '{"bufferS":10}',
+// --build the build directory (default ../kodi-work/build), --headed shows the window. The
+// stand-in's state is in sim: free memory, why it closed the app, the TV player's tracks.
 //
 // --wait: seconds between the home screen and the action (default 0), e.g. for Kodi to fill its
 // pool of Workers first, as it does when a user starts a search.
@@ -35,7 +46,8 @@ if (args['eval-python']) {
   Object.assign(args, { plugin: EVAL, cmd: 'RunScript(%s)', until: 'EVALPY:' });
   args.evalSource = `import io, contextlib, traceback, xbmc\n_b = io.StringIO()\ntry:\n    with contextlib.redirect_stdout(_b):\n        exec(compile(${JSON.stringify(args['eval-python'])}, '<evalpy>', 'exec'))\nexcept BaseException as _e:\n    _b.write(' ERR ' + traceback.format_exception_only(_e)[-1].strip() + ' | ' + traceback.format_exc())\nxbmc.log('EVALPY:' + _b.getvalue().strip().replace('\\n', ' | '), xbmc.LOGINFO)\n`;
 }
-const tv = args.tv || process.env.TV_IP;
+const SIM = args.app === 'sim';
+const tv = SIM ? '127.0.0.1' : args.tv || process.env.TV_IP;
 if (!tv) { console.error('give the TV address: --tv <ip> or TV_IP'); process.exit(2); }
 const sdb = process.env.SDB || path.join(os.homedir(), '.local/opt/sdb-dl/data/tools/sdb');
 const STANDALONE = 'KodiWasmTv.Kodi';
@@ -57,6 +69,7 @@ const sample = (off) => `(() => { const r = { now: performance.now(), long: wind
   try { r.buf = Module.wasmMemory.buffer.byteLength; } catch (e) {}
   try { r.avail = tizen.systeminfo.getAvailableMemory(); } catch (e) {}
   r.frame = (window.kodiStartup || []).some((m) => m[0] === 'first frame');
+  if (window.kodiTvSimState) r.sim = window.kodiTvSimState;
   if (r.frame) {
     try { r.heap = Module.ccall('kodi_wasm_memory_usage', 'number', ['number'], [0]); r.workers = Module.kodiThreads(); } catch (e) { r.err = String(e).slice(0, 80); }
   }
@@ -69,6 +82,7 @@ const sample = (off) => `(() => { const r = { now: performance.now(), long: wind
 // observer is in place from the first script on.
 async function open() {
   let d;
+  if (SIM) return openSim();
   if (args.app === 'standalone') {
     try { sdbShell('was_kill', STANDALONE); } catch {}
     await sleep(2000);
@@ -87,6 +101,54 @@ async function open() {
   }
   await d.call('Page.enable');
   await d.call('Page.addScriptToEvaluateOnNewDocument', { source: observe });
+  await d.call('Page.reload');
+  return d;
+}
+
+// The simulation: a new browser and serve.py per run, the profile written in and Kodi
+// restarted, then the run's page with the observer from its first script on.
+let sim = null;
+async function openSim() {
+  const { startSim } = await import(path.resolve(process.env.KODI_SRC || path.join(import.meta.dirname, '../../kodi-tizen-wasm'), 'tools/wasm/tizen/tv-sim.mjs'));
+  const simCfg = args['sim-cfg'] ? JSON.parse(args['sim-cfg']) : {};
+  if (args.mem) simCfg.memMB = +args.mem;
+  if (args.kill) simCfg.killMB = +args.kill;
+  sim = await startSim({ build: args.build, cpu: args.cpu ?? 4, port: args.port, headed: 'headed' in args, navigate: false, sim: simCfg });
+  const d = await devtools(sim.page, tv);
+  await d.call('Page.enable');
+  await d.call('Page.addScriptToEvaluateOnNewDocument', { source: observe });
+  await sim.open();
+  const files = {};
+  if (args.profile) Object.assign(files, JSON.parse(fs.readFileSync(args.profile, 'utf8')));
+  if (args.addon) {
+    const walk = (dir, rel) => { for (const n of fs.readdirSync(dir, { withFileTypes: true })) n.isDirectory() ? walk(path.join(dir, n.name), rel + '/' + n.name) : files[rel + '/' + n.name] = [fs.readFileSync(path.join(dir, n.name)).toString('base64')]; };
+    walk(args.addon, '/home/web_user/.kodi/addons/' + path.basename(path.resolve(args.addon)));
+  }
+  const ids = [...new Set(Object.keys(files).map((p) => /^\/home\/web_user\/\.kodi\/addons\/([^/]+)\/addon\.xml$/.exec(p)?.[1]).filter(Boolean))];
+  if (!Object.keys(files).length) return d;
+  const frame = `(window.kodiStartup || []).some((m) => m[0] === 'first frame')`;
+  for (let i = 0; i < 180 && !(await d.evaluate(frame).catch(() => false)); i++) await sleep(1000);
+  // In batches of about 4 MB of base64.
+  let batch = [], size = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    await d.evaluate(`(() => { for (const [p, parts] of ${JSON.stringify(batch)}) { FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+      const t = atob(parts.join('')), b = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i); FS.writeFile(p, b); } return 1; })()`);
+    batch = []; size = 0;
+  };
+  for (const [p, parts] of Object.entries(files)) {
+    // Parts are base64 of pieces of the file each; one string decodes only if each piece is whole.
+    const whole = Buffer.concat(parts.map((x) => Buffer.from(x, 'base64'))).toString('base64');
+    batch.push([p, [whole]]); size += whole.length;
+    if (size > 4e6) await flush();
+  }
+  await flush();
+  const enable = `import xbmc, json\nxbmc.executebuiltin('UpdateLocalAddons', True)\nfor a in ${JSON.stringify(ids)}:\n    xbmc.executeJSONRPC(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'Addons.SetAddonEnabled', 'params': {'addonid': a, 'enabled': True}}))\nxbmc.log('TVSIM-ENABLED ' + ' '.join(${JSON.stringify(ids)}), xbmc.LOGINFO)\n`;
+  await d.evaluate(`FS.writeFile('/home/web_user/.kodi/temp/tvsim-enable.py', ${JSON.stringify(enable)}); Module.ccall('kodi_wasm_execute_builtin', null, ['string'], ['RunScript(/home/web_user/.kodi/temp/tvsim-enable.py)']); 1`);
+  const enabled = `FS.readFile('${LOG}', { encoding: 'utf8' }).includes('TVSIM-ENABLED')`;
+  for (let i = 0; i < 60 && !(await d.evaluate(enabled).catch(() => false)); i++) await sleep(1000);
+  console.log('profile:', Object.keys(files).length, 'files, enabled', ids.join(' '));
+  await d.evaluate(`new Promise((r) => FS.syncfs(false, (e) => r(String(e))))`);
   await d.call('Page.reload');
   return d;
 }
@@ -111,6 +173,8 @@ async function run() {
   try {
     while (!dead && Date.now() < deadline && res.doneMs === null) {
       await sleep(1000);
+      // The stand-in closed the app as the TV would (Chrome keeps the DevTools socket open).
+      if (sim?.log.some((l) => /the app is closed$/.test(l))) throw new Error('closed by the TV simulation');
       let s;
       try {
         // A frozen page does not answer; the TV closes the app after a while.
@@ -134,6 +198,7 @@ async function run() {
       for (const [at, ms, loadMs] of s.made) res.workersMade.push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms), loadMs: Math.round(loadMs), beforeAction: actionPerf === null || at < actionPerf });
       pending = s.pending || [];
       res.last = { workers: s.workers, availMB: s.avail ? mb(s.avail) : null };
+      if (s.sim) res.sim = { minFreeMB: s.sim.minFreeMB, freeMB: s.sim.freeMB, workersAlive: s.sim.workersAlive, killed: s.sim.killed, emss: s.sim.emss };
       for (const [ts, line] of s.lines || []) {
         if (res.homeMs === null && /initialize done/.test(line) && ts >= origin) { res.homeMs = ts - origin; homeWall = Date.now(); }
         else if (actionEpoch !== null && ts >= sentAt && count && count.test(line)) { const k = count.exec(line)[0]; res.counted[k] = (res.counted[k] || 0) + 1; }
@@ -168,11 +233,15 @@ async function run() {
   for (const [at, ms] of pending) res.workersMade.push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms), loadMs: null, beforeAction: actionPerf === null || at < actionPerf });
   res.madeDuringAction = res.workersMade.filter((w) => !w.beforeAction && (res.doneMs === null || w.at <= res.doneMs)).length;
   try { d.close(); } catch {}
+  if (sim) {
+    res.sim = { ...res.sim, killed: sim.log.find((l) => /the app is closed$/.test(l)) || null, log: sim.log.slice(-20) };
+    await sim.close(); sim = null;
+  }
   return res;
 }
 
-if (!args.plugin || !args.until || !args.out || !['tizenbrew', 'standalone'].includes(args.app)) {
-  console.error('usage: kodi-run.mjs --app tizenbrew|standalone --plugin <plugin:// url> --until <regex> --out <file.json> | --eval-python <code> --out <file.json> [--runs N] [--wait s] [--timeout s] [--tv ip]');
+if (!args.plugin || !args.until || !args.out || !['tizenbrew', 'standalone', 'sim'].includes(args.app)) {
+  console.error('usage: kodi-run.mjs --app tizenbrew|standalone|sim --plugin <plugin:// url> --until <regex> --out <file.json> | --eval-python <code> --out <file.json> [--runs N] [--wait s] [--timeout s] [--tv ip]');
   process.exit(2);
 }
 const runs = [];
