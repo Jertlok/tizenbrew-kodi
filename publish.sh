@@ -10,7 +10,9 @@ STAGE=${2:?$USAGE}/tizen-wgt
 KODI=${3:?$USAGE}
 # The release tag kodi-service.js downloads from; bump KODI_RELEASE there for a new Kodi build.
 TAG=$(sed -n "s/^var KODI_RELEASE = '\(.*\)';/\1/p" "$(dirname "$0")/kodi-service.js")
-COMMIT=$(git -C "$KODI" rev-parse HEAD)
+# The upstream commit the build starts from; everything on top of it (local commits and
+# uncommitted changes) goes into kodi-local-changes.patch.
+COMMIT=$(git -C "$KODI" merge-base HEAD origin/master)
 
 # A fast-linked build (FAST_LINK=1 build.sh) is larger and slower: for development only.
 if grep -q '^WASM_FAST_LINK:BOOL=ON' "$STAGE/../CMakeCache.txt"; then
@@ -53,9 +55,9 @@ done > "$FLAT/files.txt"
 cat "$FLAT/files.txt"
 rm -rf "$TREE"
 # Not in files.txt, so the TV does not download it.
-git -C "$KODI" archive --format=tar.gz --prefix="kodi-tizen-wasm-$COMMIT/" -o "$FLAT/kodi-source-$COMMIT.tar.gz" HEAD
-# The build fixes made in the Kodi tree, which the archive (of the commit) does not have.
-git -C "$KODI" diff HEAD > "$FLAT/kodi-local-changes.patch"
+git -C "$KODI" archive --format=tar.gz --prefix="kodi-tizen-wasm-$COMMIT/" -o "$FLAT/kodi-source-$COMMIT.tar.gz" "$COMMIT"
+# The changes made in the Kodi tree, which the archive (of the upstream commit) does not have.
+git -C "$KODI" diff "$COMMIT" > "$FLAT/kodi-local-changes.patch"
 # DRY_RUN=1: stop here and keep the files, to look at them first.
 if [ -n "${DRY_RUN:-}" ]; then echo "dry run: the release files are in $FLAT"; exit 0; fi
 gh release create "$TAG" -R "$REPO" -t "Kodi WASM $TAG (unofficial)" -n "Unofficial Kodi WASM build for the tizenbrew-kodi module.
