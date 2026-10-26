@@ -7,7 +7,8 @@
 //   node tools/kodi-run.mjs --app standalone --eval-python '<python code>' --out <file.json>
 //
 // --eval-python writes the code as a script into Kodi's FS and runs it with RunScript; what it
-// prints is in logMatches (lines "EVALPY:<output>").
+// prints is in logMatches as one line, "EVALPY:<output>", with "ERR <exception> | <traceback>"
+// after the output if the code raised.
 //
 // Writes one JSON object per run (an array when --runs > 1), also when the app is closed
 // mid-run (then crashedAt is set). Times are in ms. homeMs: page start to "initialize done";
@@ -23,7 +24,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => (
 const EVAL = '/home/web_user/.kodi/temp/evalpy.py';
 if (args['eval-python']) {
   Object.assign(args, { plugin: EVAL, cmd: 'RunScript(%s)', until: 'EVALPY:' });
-  args.evalSource = `import io, contextlib, xbmc\n_b = io.StringIO()\nwith contextlib.redirect_stdout(_b):\n    exec(compile(${JSON.stringify(args['eval-python'])}, 'evalpy', 'exec'))\nxbmc.log('EVALPY:' + _b.getvalue().strip(), xbmc.LOGINFO)\n`;
+  args.evalSource = `import io, contextlib, traceback, xbmc\n_b = io.StringIO()\ntry:\n    with contextlib.redirect_stdout(_b):\n        exec(compile(${JSON.stringify(args['eval-python'])}, '<evalpy>', 'exec'))\nexcept BaseException as _e:\n    _b.write(' ERR ' + traceback.format_exception_only(_e)[-1].strip() + ' | ' + traceback.format_exc())\nxbmc.log('EVALPY:' + _b.getvalue().strip().replace('\\n', ' | '), xbmc.LOGINFO)\n`;
 }
 const tv = args.tv || process.env.TV_IP;
 if (!tv) { console.error('give the TV address: --tv <ip> or TV_IP'); process.exit(2); }
