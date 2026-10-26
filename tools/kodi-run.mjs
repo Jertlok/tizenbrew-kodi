@@ -4,6 +4,10 @@
 //
 //   node tools/kodi-run.mjs --app tizenbrew|standalone --plugin '<plugin:// url>' \
 //        --until '<kodi.log regex>' --out <file.json> [--cmd 'RunPlugin(%s)'] [--settle s] [--runs N] [--timeout s] [--tv ip]
+//   node tools/kodi-run.mjs --app standalone --eval-python '<python code>' --out <file.json>
+//
+// --eval-python writes the code as a script into Kodi's FS and runs it with RunScript; what it
+// prints is in logMatches (lines "EVALPY:<output>").
 //
 // Writes one JSON object per run (an array when --runs > 1), also when the app is closed
 // mid-run (then crashedAt is set). Times are in ms. homeMs: page start to "initialize done";
@@ -16,6 +20,11 @@ import { execFileSync } from 'node:child_process';
 import { findDevtools, devtools } from './tv.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => (v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]]] : a), []));
+const EVAL = '/home/web_user/.kodi/temp/evalpy.py';
+if (args['eval-python']) {
+  Object.assign(args, { plugin: EVAL, cmd: 'RunScript(%s)', until: 'EVALPY:' });
+  args.evalSource = `import io, contextlib, xbmc\n_b = io.StringIO()\nwith contextlib.redirect_stdout(_b):\n    exec(compile(${JSON.stringify(args['eval-python'])}, 'evalpy', 'exec'))\nxbmc.log('EVALPY:' + _b.getvalue().strip(), xbmc.LOGINFO)\n`;
+}
 const tv = args.tv || process.env.TV_IP;
 if (!tv) { console.error('give the TV address: --tv <ip> or TV_IP'); process.exit(2); }
 const sdb = process.env.SDB || path.join(os.homedir(), '.local/opt/sdb-dl/data/tools/sdb');
@@ -114,6 +123,7 @@ async function run() {
         actionEpoch = await d.evaluate('Date.now()');
         res.actionMs = Math.round(actionPerf);
         sentAt = actionEpoch;
+        if (args.evalSource) await d.evaluate(`FS.writeFile('${EVAL}', ${JSON.stringify(args.evalSource)})`);
         await d.evaluate(`Module.ccall('kodi_wasm_execute_builtin', null, ['string'], [${JSON.stringify((args.cmd || 'ActivateWindow(Videos,%s)').replace('%s', args.plugin))}])`);
       }
       // With --settle, the run is done when no line has matched for that many seconds.
@@ -130,7 +140,7 @@ async function run() {
 }
 
 if (!args.plugin || !args.until || !args.out || !['tizenbrew', 'standalone'].includes(args.app)) {
-  console.error('usage: kodi-run.mjs --app tizenbrew|standalone --plugin <plugin:// url> --until <regex> --out <file.json> [--runs N] [--timeout s] [--tv ip]');
+  console.error('usage: kodi-run.mjs --app tizenbrew|standalone --plugin <plugin:// url> --until <regex> --out <file.json> | --eval-python <code> --out <file.json> [--runs N] [--timeout s] [--tv ip]');
   process.exit(2);
 }
 const runs = [];
