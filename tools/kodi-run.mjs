@@ -3,7 +3,7 @@
 // its Workers and the page's long tasks until a line of kodi.log matches or the app dies.
 //
 //   node tools/kodi-run.mjs --app tizenbrew|standalone --plugin '<plugin:// url>' \
-//        --until '<kodi.log regex>' --out <file.json> [--runs N] [--timeout s] [--tv ip]
+//        --until '<kodi.log regex>' --out <file.json> [--cmd 'RunPlugin(%s)'] [--settle s] [--runs N] [--timeout s] [--tv ip]
 //
 // Writes one JSON object per run (an array when --runs > 1), also when the app is closed
 // mid-run (then crashedAt is set). Times are in ms. homeMs: page start to "initialize done";
@@ -71,6 +71,8 @@ async function run() {
   d.closed.then(() => { dead = true; });
   const until = new RegExp(args.until);
   const deadline = Date.now() + (+args.timeout || 240) * 1000;
+  const settle = +args.settle || 0;
+  let lastMatch = null, lastMatchWall = 0;
   let off = 0, origin = null, actionPerf = null, actionWall = null, actionEpoch = null, sentAt = 0;
   const mb = (n) => Math.round(n / 1e5) / 10;
   // The page counts as gone from its last answer on: a killed app does not always close the socket.
@@ -103,12 +105,16 @@ async function run() {
           actionEpoch = await d.evaluate('Date.now()');
           res.actionMs = Math.round(actionPerf);
           sentAt = actionEpoch;
-          await d.evaluate(`Module.ccall('kodi_wasm_execute_builtin', null, ['string'], [${JSON.stringify('ActivateWindow(Videos,' + args.plugin + ')')}])`);
+          await d.evaluate(`Module.ccall('kodi_wasm_execute_builtin', null, ['string'], [${JSON.stringify((args.cmd || 'ActivateWindow(Videos,%s)').replace('%s', args.plugin))}])`);
         } else if (actionEpoch !== null && ts >= sentAt && until.test(line)) {
           res.logMatches.push(line.slice(0, 300));
-          if (res.doneMs === null) res.doneMs = ts - actionEpoch;
+          if (res.firstMatchMs === undefined) res.firstMatchMs = ts - actionEpoch;
+          lastMatch = ts - actionEpoch; lastMatchWall = Date.now();
+          if (!settle) res.doneMs = lastMatch;
         }
       }
+      // With --settle, the run is done when no line has matched for that many seconds.
+      if (settle && lastMatch !== null && Date.now() - lastMatchWall > settle * 1000) res.doneMs = lastMatch;
     }
   } catch (e) { dead = true; res.error = e.message; }
   if (dead) crash();
