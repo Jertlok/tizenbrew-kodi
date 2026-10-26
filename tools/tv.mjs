@@ -151,7 +151,13 @@ async function install(file, tv) {
     let s;
     for (;;) {
       await wait(1000);
-      s = (await d.evaluate(status)).install;
+      try {
+        s = (await Promise.race([d.evaluate(status), wait(10000).then(() => { throw new Error('no answer'); })])).install;
+      } catch (e) {
+        // Installing TizenBrew itself ends the page and the service doing the install.
+        console.log('\nDevTools gone (' + e.message + '): the install replaced TizenBrew, or it was closed. Check the app on the TV.');
+        return;
+      }
       process.stdout.write(`\r${s.state} ${(s.bytes / 1e6).toFixed(1)} MB   `);
       if (s.state === 'done' || s.state === 'error') break;
     }
@@ -159,7 +165,7 @@ async function install(file, tv) {
     if (s.state === 'error') process.exitCode = 1;
   } finally {
     // Back to what the TV showed.
-    await d.call('Page.navigate', { url: page.url });
+    await Promise.race([d.call('Page.navigate', { url: page.url }), wait(3000)]).catch(() => {});
     d.close();
     server.close();
   }
