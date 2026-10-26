@@ -3,8 +3,11 @@
 // its Workers and the page's long tasks until a line of kodi.log matches or the app dies.
 //
 //   node tools/kodi-run.mjs --app tizenbrew|standalone --plugin '<plugin:// url>' \
-//        --until '<kodi.log regex>' --out <file.json> [--cmd 'RunPlugin(%s)'] [--settle s] [--runs N] [--timeout s] [--tv ip]
+//        --until '<kodi.log regex>' --out <file.json> [--cmd 'RunPlugin(%s)'] [--settle s] [--wait s] [--runs N] [--timeout s] [--tv ip]
 //   node tools/kodi-run.mjs --app standalone --eval-python '<python code>' --out <file.json>
+//
+// --wait: seconds between the home screen and the action (default 0), e.g. for Kodi to fill its
+// pool of Workers first, as it does when a user starts a search.
 //
 // --eval-python writes the code as a script into Kodi's FS and runs it with RunScript; what it
 // prints is in logMatches as one line, "EVALPY:<output>", with "ERR <exception> | <traceback>"
@@ -13,6 +16,8 @@
 // Writes one JSON object per run (an array when --runs > 1), also when the app is closed
 // mid-run (then crashedAt is set). Times are in ms. homeMs: page start to "initialize done";
 // actionMs: page start to the moment the action ran; doneMs and crashedAt: from the action.
+// workersMade: every Worker the page made, with madeDuringAction the number from the action
+// to doneMs.
 // Needs sdb connected to the TV (SDB=<path> if it is not the default) and `npm install` in tools/.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,12 +39,19 @@ const LOG = '/home/web_user/.kodi/temp/kodi.log';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sdbShell = (...a) => execFileSync(sdb, ['shell', '0', ...a], { encoding: 'utf8', timeout: 60000 });
 
-// Added before the page loads: long tasks of the main thread, kept for the sampler to drain.
-const observe = `(() => { window.__long = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__long.push([e.startTime, e.duration]); }).observe({ entryTypes: ['longtask'] }); } catch (e) {} })()`;
+// Added before the page loads: long tasks of the main thread, and every Worker made (when,
+// how long its constructor took, and when it first answered: Emscripten's 'loaded'), kept for
+// the sampler to drain.
+const observe = `(() => { window.__long = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__long.push([e.startTime, e.duration]); }).observe({ entryTypes: ['longtask'] }); } catch (e) {}
+  window.__made = []; const W = window.Worker;
+  window.Worker = class extends W { constructor(...a) { const t0 = performance.now(); super(...a); const e = [t0, performance.now() - t0, null]; window.__made.push(e);
+    this.addEventListener('message', () => { e[2] = performance.now() - t0; }, { once: true }); } }; })()`;
 
 // One sample. Kodi is only called after its first frame: before it, a call aborts Kodi.
 const sample = (off) => `(() => { const r = { now: performance.now(), long: window.__long.splice(0), off: ${off} };
+  r.made = window.__made.filter((e) => e[2] !== null); window.__made = window.__made.filter((e) => e[2] === null);
   try { r.buf = Module.wasmMemory.buffer.byteLength; } catch (e) {}
+  try { r.avail = tizen.systeminfo.getAvailableMemory(); } catch (e) {}
   r.frame = (window.kodiStartup || []).some((m) => m[0] === 'first frame');
   if (r.frame) {
     try { r.heap = Module.ccall('kodi_wasm_memory_usage', 'number', ['number'], [0]); r.workers = Module.kodiThreads(); } catch (e) { r.err = String(e).slice(0, 80); }
@@ -77,14 +89,14 @@ async function open() {
 
 async function run() {
   const res = { startedAt: new Date().toISOString(), homeMs: null, actionMs: null, doneMs: null, crashedAt: null,
-    peak: { kodiHeapMB: 0, wasmBufMB: 0, workersRunning: 0, workersCreated: 0 }, longTasks: [], logMatches: [] };
+    peak: { kodiHeapMB: 0, wasmBufMB: 0, workersRunning: 0, workersCreated: 0, workersAlive: 0, minAvailMB: null }, longTasks: [], longTasksBefore: [], workersMade: [], logMatches: [] };
   const d = await open();
   let dead = false;
   d.closed.then(() => { dead = true; });
   const until = new RegExp(args.until);
   const deadline = Date.now() + (+args.timeout || 240) * 1000;
   const settle = +args.settle || 0;
-  let lastMatch = null, lastMatchWall = 0;
+  let lastMatch = null, lastMatchWall = 0, homeWall = 0;
   let off = 0, origin = null, actionPerf = null, actionWall = null, actionEpoch = null, sentAt = 0;
   const mb = (n) => Math.round(n / 1e5) / 10;
   // The page counts as gone from its last answer on: a killed app does not always close the socket.
@@ -102,14 +114,20 @@ async function run() {
       lastAnswer = Date.now();
       if (origin === null) origin = await d.evaluate('performance.timeOrigin');
       if (s.buf) res.peak.wasmBufMB = Math.max(res.peak.wasmBufMB, mb(s.buf));
+      // The TV's free memory (Tizen's systeminfo), lowest seen.
+      if (s.avail) res.peak.minAvailMB = Math.min(res.peak.minAvailMB ?? Infinity, mb(s.avail));
       if (s.heap) res.peak.kodiHeapMB = Math.max(res.peak.kodiHeapMB, mb(s.heap));
       if (s.workers) {
         res.peak.workersRunning = Math.max(res.peak.workersRunning, s.workers.running);
         res.peak.workersCreated = Math.max(res.peak.workersCreated, s.workers.created);
+        res.peak.workersAlive = Math.max(res.peak.workersAlive, s.workers.running + s.workers.unused);
       }
-      for (const [at, ms] of s.long) if (actionPerf !== null) res.longTasks.push({ at: Math.round(at - actionPerf), ms: Math.round(ms) });
+      // Long tasks before the action (at: from the page start) go to longTasksBefore.
+      for (const [at, ms] of s.long) (actionPerf !== null ? res.longTasks : res.longTasksBefore).push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms) });
+      // Every Worker, at: from the action (from the page start before it), ms: constructor, loadMs: to its first message.
+      for (const [at, ms, loadMs] of s.made) res.workersMade.push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms), loadMs: Math.round(loadMs), beforeAction: actionPerf === null || at < actionPerf });
       for (const [ts, line] of s.lines || []) {
-        if (res.homeMs === null && /initialize done/.test(line) && ts >= origin) res.homeMs = ts - origin;
+        if (res.homeMs === null && /initialize done/.test(line) && ts >= origin) { res.homeMs = ts - origin; homeWall = Date.now(); }
         else if (actionEpoch !== null && ts >= sentAt && until.test(line)) {
           res.logMatches.push(line.slice(0, 300));
           if (res.firstMatchMs === undefined) res.firstMatchMs = ts - actionEpoch;
@@ -118,7 +136,7 @@ async function run() {
         }
       }
       // Home is up and the first frame is out (a call into Kodi before it aborts Kodi): run the action.
-      if (res.homeMs !== null && actionEpoch === null && s.frame) {
+      if (res.homeMs !== null && actionEpoch === null && s.frame && Date.now() - homeWall >= (+args.wait || 0) * 1000) {
         actionPerf = await d.evaluate('performance.now()');
         actionWall = Date.now();
         actionEpoch = await d.evaluate('Date.now()');
@@ -136,18 +154,19 @@ async function run() {
   // Matches without a quiet period (--settle) before the deadline still give a time.
   if (res.doneMs === null && lastMatch !== null) res.doneMs = lastMatch;
   if (res.homeMs !== null) res.homeMs = Math.round(res.homeMs);
+  res.madeDuringAction = res.workersMade.filter((w) => !w.beforeAction && (res.doneMs === null || w.at <= res.doneMs)).length;
   try { d.close(); } catch {}
   return res;
 }
 
 if (!args.plugin || !args.until || !args.out || !['tizenbrew', 'standalone'].includes(args.app)) {
-  console.error('usage: kodi-run.mjs --app tizenbrew|standalone --plugin <plugin:// url> --until <regex> --out <file.json> | --eval-python <code> --out <file.json> [--runs N] [--timeout s] [--tv ip]');
+  console.error('usage: kodi-run.mjs --app tizenbrew|standalone --plugin <plugin:// url> --until <regex> --out <file.json> | --eval-python <code> --out <file.json> [--runs N] [--wait s] [--timeout s] [--tv ip]');
   process.exit(2);
 }
 const runs = [];
 for (let i = 0; i < (+args.runs || 1); i++) {
   runs.push(await run());
   fs.writeFileSync(args.out, JSON.stringify(runs.length === 1 ? runs[0] : runs, null, 1));
-  console.log(`run ${i + 1}:`, JSON.stringify({ ...runs.at(-1), longTasks: runs.at(-1).longTasks.length, logMatches: runs.at(-1).logMatches.length }));
+  console.log(`run ${i + 1}:`, JSON.stringify({ ...runs.at(-1), longTasks: runs.at(-1).longTasks.length, longTasksBefore: runs.at(-1).longTasksBefore.length, workersMade: runs.at(-1).workersMade.length, logMatches: runs.at(-1).logMatches.length }));
 }
 process.exit(0);
