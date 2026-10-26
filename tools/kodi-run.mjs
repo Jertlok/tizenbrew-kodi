@@ -9,6 +9,10 @@
 // --wait: seconds between the home screen and the action (default 0), e.g. for Kodi to fill its
 // pool of Workers first, as it does when a user starts a search.
 //
+// --page-eval '<js>': evaluated on the page (awaited) just before the action; its value is in pageEval.
+// --count '<regex>': counted is, per matched text, the number of kodi.log lines after the action
+// that match it (so 'a|b' counts a and b apart).
+//
 // --eval-python writes the code as a script into Kodi's FS and runs it with RunScript; what it
 // prints is in logMatches as one line, "EVALPY:<output>", with "ERR <exception> | <traceback>"
 // after the output if the code raised.
@@ -49,7 +53,7 @@ const observe = `(() => { window.__long = []; try { new PerformanceObserver((l) 
 
 // One sample. Kodi is only called after its first frame: before it, a call aborts Kodi.
 const sample = (off) => `(() => { const r = { now: performance.now(), long: window.__long.splice(0), off: ${off} };
-  r.made = window.__made.filter((e) => e[2] !== null); window.__made = window.__made.filter((e) => e[2] === null);
+  r.made = window.__made.filter((e) => e[2] !== null); window.__made = window.__made.filter((e) => e[2] === null); r.pending = window.__made.map((e) => [e[0], e[1]]);
   try { r.buf = Module.wasmMemory.buffer.byteLength; } catch (e) {}
   try { r.avail = tizen.systeminfo.getAvailableMemory(); } catch (e) {}
   r.frame = (window.kodiStartup || []).some((m) => m[0] === 'first frame');
@@ -96,7 +100,9 @@ async function run() {
   const until = new RegExp(args.until);
   const deadline = Date.now() + (+args.timeout || 240) * 1000;
   const settle = +args.settle || 0;
-  let lastMatch = null, lastMatchWall = 0, homeWall = 0;
+  let lastMatch = null, lastMatchWall = 0, homeWall = 0, pending = [];
+  const count = args.count ? new RegExp(args.count) : null;
+  if (count) res.counted = {};
   let off = 0, origin = null, actionPerf = null, actionWall = null, actionEpoch = null, sentAt = 0;
   const mb = (n) => Math.round(n / 1e5) / 10;
   // The page counts as gone from its last answer on: a killed app does not always close the socket.
@@ -126,9 +132,12 @@ async function run() {
       for (const [at, ms] of s.long) (actionPerf !== null ? res.longTasks : res.longTasksBefore).push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms) });
       // Every Worker, at: from the action (from the page start before it), ms: constructor, loadMs: to its first message.
       for (const [at, ms, loadMs] of s.made) res.workersMade.push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms), loadMs: Math.round(loadMs), beforeAction: actionPerf === null || at < actionPerf });
+      pending = s.pending || [];
+      res.last = { workers: s.workers, availMB: s.avail ? mb(s.avail) : null };
       for (const [ts, line] of s.lines || []) {
         if (res.homeMs === null && /initialize done/.test(line) && ts >= origin) { res.homeMs = ts - origin; homeWall = Date.now(); }
-        else if (actionEpoch !== null && ts >= sentAt && until.test(line)) {
+        else if (actionEpoch !== null && ts >= sentAt && count && count.test(line)) { const k = count.exec(line)[0]; res.counted[k] = (res.counted[k] || 0) + 1; }
+        if (actionEpoch !== null && ts >= sentAt && until.test(line)) {
           res.logMatches.push(line.slice(0, 300));
           if (res.firstMatchMs === undefined) res.firstMatchMs = ts - actionEpoch;
           lastMatch = ts - actionEpoch; lastMatchWall = Date.now();
@@ -137,6 +146,7 @@ async function run() {
       }
       // Home is up and the first frame is out (a call into Kodi before it aborts Kodi): run the action.
       if (res.homeMs !== null && actionEpoch === null && s.frame && Date.now() - homeWall >= (+args.wait || 0) * 1000) {
+        if (args['page-eval']) res.pageEval = await d.evaluate(args['page-eval']);
         actionPerf = await d.evaluate('performance.now()');
         actionWall = Date.now();
         actionEpoch = await d.evaluate('Date.now()');
@@ -154,6 +164,8 @@ async function run() {
   // Matches without a quiet period (--settle) before the deadline still give a time.
   if (res.doneMs === null && lastMatch !== null) res.doneMs = lastMatch;
   if (res.homeMs !== null) res.homeMs = Math.round(res.homeMs);
+  // Workers that never answered (still loading, or the app died): loadMs null.
+  for (const [at, ms] of pending) res.workersMade.push({ at: Math.round(at - (actionPerf ?? 0)), ms: Math.round(ms), loadMs: null, beforeAction: actionPerf === null || at < actionPerf });
   res.madeDuringAction = res.workersMade.filter((w) => !w.beforeAction && (res.doneMs === null || w.at <= res.doneMs)).length;
   try { d.close(); } catch {}
   return res;
