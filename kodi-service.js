@@ -1,5 +1,6 @@
 // The Kodi app module's service. service.js, the loader TizenBrew starts, fetches this file
-// from the main branch and runs it with `require`, `tizen`, `module` and `reload`.
+// from the main branch and runs it with `require`, `tizen`, `module`, `reload` and (from
+// loader version 2) `loader`.
 //
 // Kodi's WASM build needs SharedArrayBuffer, which the TV's web engine only gives to
 // file:// documents (COOP/COEP headers do not isolate an http page there). So the
@@ -359,11 +360,12 @@ function openKodi() {
       if (r.error || (r.result && r.result.errorText)) throw new Error((r.error && r.error.message) || r.result.errorText);
     });
   }).then(function () {
+    status.openError = null;
     log('opened Kodi');
     // Only now: until the page shows this release, it may still run an older one, which
     // reloads from its own files after a crash.
     removeOldReleases();
-  }, function (e) { log('could not open Kodi: ' + e.message); })
+  }, function (e) { status.openError = e.message; log('could not open Kodi: ' + e.message); })
     .then(function () { opening = false; });
 }
 
@@ -501,7 +503,11 @@ var server = http.createServer(function (req, res) {
   // copy of this file. A download in progress stops; the new copy resumes it.
   if (req.url === '/reload') {
     res.end('{"reloading":true}');
-    reloadSelf();
+    // A loader of version 2 keeps the code and checks it with an ETag: no restart when it
+    // did not change. Older loaders leave it to this copy.
+    if (typeof loader === 'object' && loader && loader.version >= 2) {
+      loader.check().catch(function (e) { log('reload failed: ' + e.message); });
+    } else reloadSelf();
     return;
   }
   // The page asks for /status until Kodi is ready, then tries to open it itself, which
@@ -529,4 +535,15 @@ server.once('listening', function () {
   });
 });
 
-module.exports = { status: status, server: server, findDevtools: findDevtools };
+// TizenBrew (from 2.1) asks this when Kodi is opened from its UI, a file:// page that may
+// open Kodi itself: no DevTools needed, and no wait for the module's page.
+function launchUrl() {
+  if (!fs.existsSync(DONE)) return null;
+  removeOldReleases();
+  return status.url;
+}
+
+module.exports = {
+  status: status, server: server, findDevtools: findDevtools, launchUrl: launchUrl,
+  onStop: function () { stop(); closeServer(); }
+};

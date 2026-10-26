@@ -1,6 +1,6 @@
 {
   "name": "tizenbrew-kodi",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Unofficial Kodi build (WebAssembly, from Ricrdsson1/kodi-tizen-wasm) as a TizenBrew app module.",
   "license": "GPL-2.0-or-later",
   "packageType": "app",

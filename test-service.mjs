@@ -157,7 +157,17 @@ assert.equal(sdbCommand, 'shell:0 debug KodiWasmTv.Kodi');
 
 const loaderLog = await (await fetch('http://127.0.0.1:8084')).json();
 assert.match(loaderLog.events.join('\n'), /got \d+ bytes in \d+ ms, starting it/);
+
+// TizenBrew opens Kodi from its own page with the URL the service names.
+assert.equal(svc.launchUrl(), 'file://' + dir + '/index.html');
+
+// Offline (a TV just booted): the loader starts the copy it kept, at once.
+process.env.KODI_SERVICE_SRC = 'http://127.0.0.1:1/kodi-service.js';
+const offline = run();
+assert.ok(offline.current() && offline.current().launchUrl, 'kept copy started without the network');
+await until(() => offline.current().server.listening);
+assert.equal((await status()).state, 'ready');
 await fetch('http://127.0.0.1:8083/shutdown'); release.close(); sdb.close();
-old.logServer.close(); svc.logServer.close();
+old.logServer.close(); svc.logServer.close(); offline.logServer.close();
 fs.rmSync(data, { recursive: true });
 console.log('ok');

@@ -20,7 +20,11 @@
   // from there because only file:// pages get SharedArrayBuffer on the TV.
   function poll() {
     fetch('http://127.0.0.1:8083/status').then(function (r) { return r.json(); }).then(function (s) {
-      if (s.state === 'ready') return location.replace(s.url);
+      if (s.state === 'ready') {
+        // Chromium blocks this; the service opens Kodi through DevTools instead.
+        location.replace(s.url);
+        return waitForOpen();
+      }
       if (s.state === 'error') { document.getElementById('err').textContent = s.error; return; }
       if (s.total) {
         document.getElementById('msg').textContent = 'Downloading Kodi (first start only): '
@@ -30,10 +34,20 @@
       setTimeout(poll, 500);
     }).catch(function () { setTimeout(poll, 500); });
   }
-  // First have the loader (service.js) run the newest service code, then follow it. A
-  // service that is not up yet, or is downloading, simply keeps running.
-  fetch('http://127.0.0.1:8083/reload').then(function (r) { return r.json(); })
-    .then(function (r) { setTimeout(poll, r.reloading ? 1500 : 0); }, function () { poll(); });
+  // Without DevTools (TizenBrew 2.1 starts without them) the service cannot open Kodi;
+  // TizenBrew's own page can, so the way is back there.
+  function waitForOpen() {
+    fetch('http://127.0.0.1:8083/status?peek').then(function (r) { return r.json(); }).then(function (s) {
+      if (!s.openError) return setTimeout(waitForOpen, 1000);
+      document.getElementById('msg').textContent = 'Kodi is ready. Press Back, then open Kodi again.';
+      document.getElementById('fill').style.width = '100%';
+    }).catch(function () { setTimeout(waitForOpen, 1000); });
+  }
+  window.addEventListener('keydown', function (e) { if (e.keyCode === 10009) history.back(); });
+  // Have the loader (service.js) check for newer service code; a changed copy takes over
+  // by itself, and the status is followed meanwhile.
+  fetch('http://127.0.0.1:8083/reload').catch(function () {});
+  poll();
 </script>
 </body>
 </html>
