@@ -89,6 +89,8 @@ export async function devtools(target, tv) {
   const waiting = new Map();
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } };
   const call = (method, params) => new Promise((resolve) => { waiting.set(++id, resolve); ws.send(JSON.stringify({ id, method, params })); });
+  // Calls waiting when the page or app goes away end with an error; `closed` resolves then.
+  const closed = new Promise((resolve) => { ws.onclose = () => { for (const w of waiting.values()) w({ error: { message: 'DevTools closed' } }); waiting.clear(); resolve(); }; });
   // Evaluates an expression on the page, awaiting it; throws what the page threw.
   const evaluate = async (expression) => {
     const m = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
@@ -96,7 +98,7 @@ export async function devtools(target, tv) {
     if (m.result.exceptionDetails) throw new Error(m.result.exceptionDetails.exception?.description || m.result.exceptionDetails.text);
     return m.result.result.value;
   };
-  return { call, evaluate, close: () => ws.close() };
+  return { call, evaluate, closed, close: () => ws.close() };
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
