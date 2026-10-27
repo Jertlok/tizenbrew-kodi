@@ -72,7 +72,9 @@ const observe = `(() => { window.__raf = 0; (function f() { window.__raf++; requ
 const sample = (off) => `(() => { const r = { now: performance.now(), long: window.__long.splice(0), off: ${off} };
   r.made = window.__made.filter((e) => e[2] !== null); window.__made = window.__made.filter((e) => e[2] === null); r.pending = window.__made.map((e) => [e[0], e[1]]);
   try { r.buf = Module.wasmMemory.buffer.byteLength; } catch (e) {}
-  try { r.avail = tizen.systeminfo.getAvailableMemory(); } catch (e) {}
+  // Kodi's own sample of the TV's free memory (MB), not Tizen's query: that is a sync IPC on the page's
+  // thread which the TV sometimes leaves unanswered for seconds. -1 until Kodi has a value.
+  try { const mb = HEAP32[Module._wasm_free_mb >> 2]; if (mb >= 0) r.avail = mb * 1e6; } catch (e) {}
   r.frame = (window.kodiStartup || []).some((m) => m[0] === 'first frame');
   if (window.kodiTvSimState) r.sim = window.kodiTvSimState;
   if (r.frame) {
@@ -189,7 +191,7 @@ async function run() {
       lastAnswer = Date.now();
       if (origin === null) origin = await d.evaluate('performance.timeOrigin');
       if (s.buf) res.peak.wasmBufMB = Math.max(res.peak.wasmBufMB, mb(s.buf));
-      // The TV's free memory (Tizen's systeminfo), lowest seen.
+      // The TV's free memory as Kodi samples it, lowest seen.
       if (s.avail) res.peak.minAvailMB = Math.min(res.peak.minAvailMB ?? Infinity, mb(s.avail));
       if (s.heap) res.peak.kodiHeapMB = Math.max(res.peak.kodiHeapMB, mb(s.heap));
       if (s.workers) {
