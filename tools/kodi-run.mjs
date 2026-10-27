@@ -21,6 +21,11 @@
 // pool of Workers first, as it does when a user starts a search.
 //
 // --page-eval '<js>': evaluated on the page (awaited) just before the action; its value is in pageEval.
+// --cpuprof '<delay s>,<secs>,<interval us>,<file>': a CPU profile of the page and of every Worker
+// (DevTools auto-attach; Workers made during it are added) from <delay> s after the action, with the
+// page's rAF rate over the same window; res.prof has the summary and <file> the profiles, read by
+// tools/cpuprof.py. Each profiled Worker costs TV memory (one run with it was closed at 156 MB free
+// that did not close without it). Tracing is not available on the TV ("Tracing failed").
 // --count '<regex>': counted is, per matched text, the number of kodi.log lines after the action
 // that match it (so 'a|b' counts a and b apart).
 //
@@ -58,8 +63,8 @@ const sdbShell = (...a) => execFileSync(sdb, ['shell', '0', ...a], { encoding: '
 // Added before the page loads: long tasks of the main thread, and every Worker made (when,
 // how long its constructor took, and when it first answered: Emscripten's 'loaded'), kept for
 // the sampler to drain.
-const observe = `(() => { window.__long = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__long.push([e.startTime, e.duration]); }).observe({ entryTypes: ['longtask'] }); } catch (e) {}
-  window.__made = []; const W = window.Worker;
+const observe = `(() => { window.__raf = 0; (function f() { window.__raf++; requestAnimationFrame(f); })(); window.__long = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__long.push([e.startTime, e.duration]); }).observe({ entryTypes: ['longtask'] }); } catch (e) {}
+  window.__made = []; const W = window.Worker; const pm = W.prototype.postMessage; W.prototype.postMessage = function (m, ...r) { if (m && m.cmd === 'run') this.__sr = m.start_routine; return pm.call(this, m, ...r); };
   window.Worker = class extends W { constructor(...a) { const t0 = performance.now(); super(...a); const e = [t0, performance.now() - t0, null]; window.__made.push(e);
     this.addEventListener('message', () => { e[2] = performance.now() - t0; }, { once: true }); } }; })()`;
 
@@ -221,6 +226,39 @@ async function run() {
         await d.evaluate(`Module.ccall('kodi_wasm_execute_builtin', null, ['string'], [${JSON.stringify((args.cmd || 'ActivateWindow(Videos,%s)').replace('%s', args.plugin))}])`);
       }
       // With --settle, the run is done when no line has matched for that many seconds.
+      // --cpuprof (see the top).
+      if (args.cpuprof && actionWall) {
+        const [delay, secs, interval, file] = args.cpuprof.split(',');
+        const within = (p, ms) => Promise.race([p, sleep(ms).then(() => ({ error: { message: 'no answer in ' + ms + ' ms' } }))]);
+        // Not awaited in order: a Worker blocked in Atomics.wait handles DevTools messages only when it wakes.
+        const startProf = (sid) => { d.call('Profiler.enable', {}, sid); d.call('Profiler.setSamplingInterval', { interval: +interval }, sid); return within(d.call('Profiler.start', {}, sid), 2000).then((r) => { if (sid) res.prof.sessions[sid].started = !r.error; }); };
+        if (!res.prof && Date.now() - actionWall >= delay * 1000) {
+          const prof = res.prof = { startedAt: Date.now() - actionWall, sessions: {} };
+          const roles = `JSON.stringify(Object.fromEntries(PThread.runningWorkers.map((w) => [w.workerID, w.__sr])))`;
+          prof.rolesAtStart = JSON.parse(await d.evaluate(roles));
+          d.on('Target.attachedToTarget', (p) => { if (p.targetInfo.type === 'worker' && !prof.done) { prof.sessions[p.sessionId] = { title: p.targetInfo.title, late: !!prof.t0 }; if (prof.t0) startProf(p.sessionId); } });
+          await within(d.call('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }), 5000);
+          await sleep(1500);
+          await startProf(undefined);
+          await Promise.all(Object.keys(prof.sessions).map((sid) => startProf(sid)));
+          prof.raf0 = await d.evaluate('window.__raf'); prof.t0 = Date.now();
+          console.log('cpuprof started on page +', Object.keys(prof.sessions).length, 'Workers');
+        } else if (res.prof && !res.prof.done && Date.now() - res.prof.t0 >= secs * 1000) {
+          const prof = res.prof;
+          const raf1 = await d.evaluate('window.__raf'), t1 = Date.now();
+          prof.done = true; prof.secs = (t1 - prof.t0) / 1000;
+          prof.rafFps = Math.round((raf1 - prof.raf0) / prof.secs * 10) / 10;
+          const profiles = [];
+          const page = await within(d.call('Profiler.stop', {}, undefined), 20000);
+          profiles.push({ session: 'page', title: 'main', profile: page.result?.profile, error: page.error?.message });
+          profiles.push(...await Promise.all(Object.entries(prof.sessions).map(async ([sid, info]) => { const r = await within(d.call('Profiler.stop', {}, sid), 5000); return { session: sid, ...info, profile: r.result?.profile, error: r.error?.message }; })));
+          prof.stopMs = Date.now() - t1;
+          prof.rolesAtEnd = JSON.parse(await d.evaluate(`JSON.stringify(Object.fromEntries(PThread.runningWorkers.map((w) => [w.workerID, w.__sr])))`));
+          fs.writeFileSync(file, JSON.stringify({ meta: { ...prof, sessions: undefined }, profiles }));
+          prof.file = file; prof.workersProfiled = profiles.filter((x) => x.profile).length; prof.errors = profiles.filter((x) => x.error).length;
+          console.log('cpuprof', JSON.stringify({ secs: prof.secs, rafFps: prof.rafFps, stopMs: prof.stopMs, profiled: prof.workersProfiled, errors: prof.errors }));
+        }
+      }
       if (settle && lastMatch !== null && Date.now() - lastMatchWall > settle * 1000) res.doneMs = lastMatch;
     }
   } catch (e) { dead = true; res.error = e.message; }
